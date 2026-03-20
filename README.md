@@ -253,9 +253,13 @@ When `replyInThread` is enabled and `threadSessionIsolation` is not set, it defa
 | 403 on reactions | Missing `chat.messages.reactions.create` scope; re-auth with all scopes |
 | Multiple replies per message | Check for duplicate listener processes; only one should run |
 
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, code style, and how to submit PRs.
+
 ## License
 
-Apache 2.0
+MIT
 
 ## Links
 

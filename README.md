@@ -93,6 +93,7 @@ gcloud pubsub topics add-iam-policy-binding openclaw-chat-events \
    - `https://www.googleapis.com/auth/chat.messages.readonly`
    - `https://www.googleapis.com/auth/chat.spaces.readonly`
    - `https://www.googleapis.com/auth/chat.messages.reactions.create`
+   - `https://www.googleapis.com/auth/pubsub`
 
 ### 4. Create OAuth Client
 

@@ -1,5 +1,7 @@
 # googlechatpubsub — OpenClaw Channel Plugin
 
+> **[📖 Visual Setup Guide](https://teyou.github.io/openclaw-googlechatpubsub-plugin/)** — step-by-step installation with screenshots
+
 Listen to Google Chat spaces via **Workspace Events API + Cloud Pub/Sub** — no `@mention` required.
 
 Messages arrive through Pub/Sub, get routed to one or more agents by keyword or always-listen rules, processed through the OpenClaw pipeline, and replied via the Google Chat API. Thread-first replies and per-thread session isolation are supported.

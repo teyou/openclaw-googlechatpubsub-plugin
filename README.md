@@ -263,6 +263,7 @@ MIT
 
 ## Links
 
+- **[📖 Setup Guide](https://teyou.github.io/openclaw-googlechatpubsub-plugin/)** — visual step-by-step installation guide
 - [OpenClaw Docs](https://docs.openclaw.ai)
 - [Google Workspace Events API](https://developers.google.com/workspace/events)
 - [Cloud Pub/Sub Documentation](https://cloud.google.com/pubsub/docs)

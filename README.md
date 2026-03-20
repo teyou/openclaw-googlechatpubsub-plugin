@@ -80,7 +80,7 @@ Grant the Chat API push service account permission to publish:
 ```bash
 gcloud pubsub topics add-iam-policy-binding openclaw-chat-events \
   --member="serviceAccount:chat-api-push@system.gserviceaccount.com" \
-  --role="roles/pubsub.editor"
+  --role="roles/pubsub.publisher"
 ```
 
 ### 3. OAuth Consent Screen

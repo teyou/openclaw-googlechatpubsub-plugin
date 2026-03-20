@@ -90,7 +90,7 @@ gcloud pubsub topics add-iam-policy-binding openclaw-chat-events \
 3. Set app name (e.g., "OpenClaw Pub/Sub")
 4. Add developer contact email
 5. Add scopes:
-   - `https://www.googleapis.com/auth/chat.messages.readonly`
+   - `https://www.googleapis.com/auth/chat.messages` (read + send; supersedes `chat.messages.readonly`)
    - `https://www.googleapis.com/auth/chat.spaces.readonly`
    - `https://www.googleapis.com/auth/chat.messages.reactions.create`
    - `https://www.googleapis.com/auth/pubsub`
@@ -107,7 +107,7 @@ gcloud pubsub topics add-iam-policy-binding openclaw-chat-events \
 Generate the authorization URL:
 
 ```
-https://accounts.google.com/o/oauth2/v2/auth?client_id=YOUR_CLIENT_ID&redirect_uri=http://localhost:3000/oauth/callback&response_type=code&scope=https://www.googleapis.com/auth/chat.messages.readonly+https://www.googleapis.com/auth/chat.spaces.readonly+https://www.googleapis.com/auth/chat.messages.reactions.create+https://www.googleapis.com/auth/pubsub&access_type=offline&prompt=consent
+https://accounts.google.com/o/oauth2/v2/auth?client_id=YOUR_CLIENT_ID&redirect_uri=http://localhost:3000/oauth/callback&response_type=code&scope=https://www.googleapis.com/auth/chat.messages+https://www.googleapis.com/auth/chat.spaces.readonly+https://www.googleapis.com/auth/chat.messages.reactions.create+https://www.googleapis.com/auth/pubsub&access_type=offline&prompt=consent
 ```
 
 Open the URL, grant consent, copy the `code` parameter from the redirect, then exchange it:

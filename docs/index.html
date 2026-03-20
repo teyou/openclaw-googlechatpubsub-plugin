@@ -979,11 +979,10 @@
             <h4>Add OAuth Scopes</h4>
             <p>Back on the OAuth consent screen, go to <strong>Scopes</strong> and add:</p>
             <ul>
-              <li><code>https://www.googleapis.com/auth/chat.messages.readonly</code> — read messages via Workspace Events</li>
-              <li><code>https://www.googleapis.com/auth/chat.spaces.readonly</code> — create subscriptions on spaces</li>
+              <li><code>https://www.googleapis.com/auth/chat.messages</code> — read messages + send replies (supersedes <code>chat.messages.readonly</code>)</li>
+              <li><code>https://www.googleapis.com/auth/chat.spaces.readonly</code> — create Workspace Events subscriptions on spaces</li>
               <li><code>https://www.googleapis.com/auth/chat.messages.reactions.create</code> — add 👀 emoji reactions</li>
               <li><code>https://www.googleapis.com/auth/pubsub</code> — pull messages from Pub/Sub subscription</li>
-              <li><code>https://www.googleapis.com/auth/chat.messages</code> — send replies</li>
             </ul>
             <div class="callout info">
               <span class="callout-icon">ℹ️</span>
@@ -1210,11 +1209,10 @@ git clone https://github.com/teyou/openclaw-googlechatpubsub-plugin.git \
   ?client_id=YOUR_CLIENT_ID
   &redirect_uri=http://localhost:3000/oauth/callback
   &response_type=code
-  &scope=https://www.googleapis.com/auth/chat.messages.readonly
+  &scope=https://www.googleapis.com/auth/chat.messages
          https://www.googleapis.com/auth/chat.spaces.readonly
          https://www.googleapis.com/auth/chat.messages.reactions.create
          https://www.googleapis.com/auth/pubsub
-         https://www.googleapis.com/auth/chat.messages
   &access_type=offline
   &prompt=consent</code></pre>
             </div>

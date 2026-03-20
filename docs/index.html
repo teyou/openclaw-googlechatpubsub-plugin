@@ -1,0 +1,1824 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>googlechatpubsub — Setup & Installation Guide | OpenClaw</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css">
+<style>
+  :root {
+    --bg:          #0f0f1a;
+    --bg-sidebar:  #111120;
+    --bg-card:     #1a1a2e;
+    --border:      #2a2a45;
+    --border-dim:  #1e1e35;
+    --text:        #e0e0e8;
+    --text-muted:  #9a9ab8;
+    --text-dim:    #6a6a88;
+    --blue:        #4da3ff;
+    --blue-dim:    rgba(77,163,255,0.12);
+    --green:       #4ade80;
+    --green-dim:   rgba(74,222,128,0.12);
+    --yellow:      #fbbf24;
+    --yellow-dim:  rgba(251,191,36,0.12);
+    --red:         #f87171;
+    --red-dim:     rgba(248,113,113,0.12);
+    --orange:      #fb923c;
+    --purple:      #a78bfa;
+    --sidebar-w:   260px;
+    --header-h:    60px;
+  }
+
+  *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.7;
+    overflow-x: hidden;
+  }
+
+  /* ─── HEADER ─────────────────────────────────── */
+  .header {
+    position: fixed;
+    top: 0; left: 0; right: 0;
+    height: var(--header-h);
+    background: rgba(15,15,26,0.96);
+    backdrop-filter: blur(12px);
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    padding: 0 1.5rem;
+    z-index: 200;
+    gap: 1rem;
+  }
+  .header-logo {
+    font-size: 1rem;
+    font-weight: 800;
+    color: var(--blue);
+    letter-spacing: -0.5px;
+    text-decoration: none;
+    white-space: nowrap;
+  }
+  .header-logo span { color: var(--text-muted); font-weight: 400; }
+  .header-sep { color: var(--border); font-size: 1.2rem; }
+  .header-title { font-size: .9rem; font-weight: 600; color: var(--text-muted); white-space: nowrap; }
+  .header-badge {
+    margin-left: auto;
+    display: inline-flex;
+    align-items: center;
+    gap: .4rem;
+    background: var(--green-dim);
+    border: 1px solid rgba(74,222,128,0.3);
+    color: var(--green);
+    padding: .25rem .75rem;
+    border-radius: 999px;
+    font-size: .75rem;
+    font-weight: 700;
+    letter-spacing: .5px;
+    text-transform: uppercase;
+    white-space: nowrap;
+  }
+
+  /* ─── LAYOUT ─────────────────────────────────── */
+  .layout {
+    display: flex;
+    padding-top: var(--header-h);
+    min-height: 100vh;
+  }
+
+  /* ─── SIDEBAR ────────────────────────────────── */
+  .sidebar {
+    width: var(--sidebar-w);
+    min-width: var(--sidebar-w);
+    position: fixed;
+    top: var(--header-h);
+    bottom: 0;
+    left: 0;
+    background: var(--bg-sidebar);
+    border-right: 1px solid var(--border);
+    overflow-y: auto;
+    padding: 1.5rem 0 2rem;
+    scrollbar-width: thin;
+    scrollbar-color: var(--border) transparent;
+  }
+  .sidebar::-webkit-scrollbar { width: 4px; }
+  .sidebar::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+  .sidebar-section {
+    padding: 0 1rem .5rem;
+    font-size: .7rem;
+    font-weight: 700;
+    letter-spacing: 1.2px;
+    text-transform: uppercase;
+    color: var(--text-dim);
+    margin-top: 1.5rem;
+  }
+  .sidebar-section:first-child { margin-top: 0; }
+
+  .sidebar nav a {
+    display: flex;
+    align-items: center;
+    gap: .6rem;
+    padding: .42rem 1rem;
+    font-size: .84rem;
+    color: var(--text-muted);
+    text-decoration: none;
+    border-left: 2px solid transparent;
+    transition: all .15s;
+    line-height: 1.4;
+  }
+  .sidebar nav a:hover { color: var(--text); background: rgba(255,255,255,0.03); border-left-color: var(--border); }
+  .sidebar nav a.active { color: var(--blue); background: var(--blue-dim); border-left-color: var(--blue); font-weight: 600; }
+  .sidebar nav a .num {
+    min-width: 20px;
+    height: 20px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--border);
+    border-radius: 4px;
+    font-size: .7rem;
+    font-weight: 700;
+    color: var(--text-dim);
+    flex-shrink: 0;
+  }
+  .sidebar nav a.active .num { background: var(--blue); color: #fff; }
+
+  /* ─── MAIN ───────────────────────────────────── */
+  .main {
+    margin-left: var(--sidebar-w);
+    flex: 1;
+    min-width: 0;
+    padding: 3rem clamp(1.5rem, 5vw, 4rem) 6rem;
+    max-width: 900px;
+  }
+
+  /* ─── PAGE HERO ──────────────────────────────── */
+  .page-hero {
+    margin-bottom: 3.5rem;
+    padding-bottom: 2.5rem;
+    border-bottom: 1px solid var(--border-dim);
+  }
+  .page-hero .tag {
+    display: inline-flex;
+    align-items: center;
+    gap: .4rem;
+    background: var(--blue-dim);
+    border: 1px solid rgba(77,163,255,0.25);
+    color: var(--blue);
+    padding: .3rem .85rem;
+    border-radius: 999px;
+    font-size: .75rem;
+    font-weight: 700;
+    letter-spacing: .5px;
+    text-transform: uppercase;
+    margin-bottom: 1.2rem;
+  }
+  .page-hero h1 {
+    font-size: clamp(1.8rem, 4vw, 2.8rem);
+    font-weight: 800;
+    line-height: 1.15;
+    color: #fff;
+    margin-bottom: .7rem;
+  }
+  .page-hero h1 code {
+    font-family: 'SFMono-Regular', Consolas, monospace;
+    font-size: .9em;
+    color: var(--blue);
+    background: var(--blue-dim);
+    padding: .1em .25em;
+    border-radius: 4px;
+  }
+  .page-hero p {
+    color: var(--text-muted);
+    font-size: 1.05rem;
+    max-width: 640px;
+  }
+  .page-hero .meta {
+    margin-top: 1.2rem;
+    display: flex;
+    gap: 1.5rem;
+    flex-wrap: wrap;
+  }
+  .meta-item {
+    display: flex;
+    align-items: center;
+    gap: .4rem;
+    font-size: .82rem;
+    color: var(--text-dim);
+  }
+  .meta-item strong { color: var(--text-muted); }
+
+  /* ─── SECTIONS ───────────────────────────────── */
+  .section {
+    margin-bottom: 5rem;
+    scroll-margin-top: calc(var(--header-h) + 1.5rem);
+  }
+  .section-header {
+    display: flex;
+    align-items: center;
+    gap: .8rem;
+    margin-bottom: .5rem;
+  }
+  .section-num {
+    min-width: 32px;
+    height: 32px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: linear-gradient(135deg, var(--blue), #7c3aed);
+    border-radius: 8px;
+    font-size: .85rem;
+    font-weight: 800;
+    color: #fff;
+    flex-shrink: 0;
+  }
+  .section h2 {
+    font-size: 1.6rem;
+    font-weight: 800;
+    color: #fff;
+    margin: 0;
+  }
+  .section-sub {
+    color: var(--text-muted);
+    font-size: .95rem;
+    margin: .4rem 0 2rem calc(32px + .8rem);
+  }
+
+  h3 {
+    font-size: 1.1rem;
+    font-weight: 700;
+    color: #fff;
+    margin: 2.5rem 0 .7rem;
+    display: flex;
+    align-items: center;
+    gap: .5rem;
+  }
+  h3 .h3-dot {
+    width: 6px; height: 6px;
+    background: var(--blue);
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+
+  p { margin-bottom: .7rem; color: var(--text); }
+  p a { color: var(--blue); text-decoration: none; }
+  p a:hover { text-decoration: underline; }
+
+  /* ─── STEP CARDS ─────────────────────────────── */
+  .steps { display: flex; flex-direction: column; gap: 1.2rem; margin: 1.5rem 0; }
+  .step-card {
+    display: flex;
+    gap: 1.2rem;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 1.4rem 1.5rem;
+    position: relative;
+    transition: border-color .2s;
+  }
+  .step-card:hover { border-color: rgba(77,163,255,0.35); }
+  .step-num-badge {
+    min-width: 36px;
+    height: 36px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--blue-dim);
+    border: 1px solid rgba(77,163,255,0.3);
+    border-radius: 50%;
+    font-size: .9rem;
+    font-weight: 800;
+    color: var(--blue);
+    flex-shrink: 0;
+    margin-top: .1rem;
+  }
+  .step-body { flex: 1; min-width: 0; }
+  .step-body h4 {
+    font-size: 1rem;
+    font-weight: 700;
+    color: #fff;
+    margin: 0 0 .4rem;
+  }
+  .step-body p {
+    font-size: .9rem;
+    color: var(--text-muted);
+    margin: 0 0 .6rem;
+  }
+  .step-body p:last-child { margin-bottom: 0; }
+
+  /* ─── SCREENSHOT PLACEHOLDERS ────────────────── */
+  .screenshot-placeholder {
+    background: linear-gradient(135deg, rgba(77,163,255,0.04), rgba(124,58,237,0.04));
+    border: 1px dashed rgba(77,163,255,0.25);
+    border-radius: 10px;
+    padding: 1.5rem;
+    margin: .8rem 0;
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    color: var(--text-dim);
+    font-size: .85rem;
+  }
+  .screenshot-placeholder .icon {
+    font-size: 1.8rem;
+    opacity: .6;
+  }
+  .screenshot-placeholder .info strong {
+    display: block;
+    color: var(--text-muted);
+    margin-bottom: .2rem;
+    font-size: .88rem;
+  }
+
+  /* ─── CODE BLOCKS ────────────────────────────── */
+  .code-block {
+    position: relative;
+    margin: 1rem 0;
+    border-radius: 10px;
+    overflow: hidden;
+    border: 1px solid var(--border);
+  }
+  .code-block-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: .5rem .75rem .5rem 1rem;
+    background: rgba(255,255,255,0.03);
+    border-bottom: 1px solid var(--border);
+  }
+  .code-lang {
+    font-size: .7rem;
+    font-weight: 700;
+    letter-spacing: .8px;
+    text-transform: uppercase;
+    color: var(--text-dim);
+  }
+  .copy-btn {
+    display: flex;
+    align-items: center;
+    gap: .3rem;
+    padding: .25rem .6rem;
+    background: rgba(255,255,255,0.05);
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    color: var(--text-dim);
+    font-size: .72rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all .2s;
+    font-family: inherit;
+  }
+  .copy-btn:hover { background: rgba(77,163,255,0.1); border-color: rgba(77,163,255,0.3); color: var(--blue); }
+  .copy-btn.copied { color: var(--green); border-color: rgba(74,222,128,0.3); background: var(--green-dim); }
+
+  .code-block pre {
+    margin: 0 !important;
+    padding: 1.1rem 1.2rem !important;
+    background: #0d0d1a !important;
+    font-size: .84rem !important;
+    line-height: 1.65 !important;
+    overflow-x: auto;
+    tab-size: 2;
+  }
+  .code-block pre code { background: none !important; padding: 0 !important; font-size: inherit !important; }
+
+  /* Inline code */
+  p code, li code, td code {
+    font-family: 'SFMono-Regular', Consolas, monospace;
+    font-size: .82em;
+    background: rgba(255,255,255,0.06);
+    border: 1px solid var(--border);
+    padding: .1em .4em;
+    border-radius: 4px;
+    color: var(--blue);
+  }
+
+  /* ─── CALLOUTS ───────────────────────────────── */
+  .callout {
+    display: flex;
+    gap: .9rem;
+    padding: 1rem 1.2rem;
+    border-radius: 10px;
+    margin: 1rem 0;
+    font-size: .9rem;
+  }
+  .callout-icon { font-size: 1.1rem; flex-shrink: 0; margin-top: .05rem; }
+  .callout-body { flex: 1; }
+  .callout-body strong { display: block; margin-bottom: .2rem; }
+  .callout.info { background: var(--blue-dim); border: 1px solid rgba(77,163,255,0.2); }
+  .callout.info .callout-icon, .callout.info strong { color: var(--blue); }
+  .callout.warn { background: var(--yellow-dim); border: 1px solid rgba(251,191,36,0.2); }
+  .callout.warn .callout-icon, .callout.warn strong { color: var(--yellow); }
+  .callout.success { background: var(--green-dim); border: 1px solid rgba(74,222,128,0.2); }
+  .callout.success .callout-icon, .callout.success strong { color: var(--green); }
+  .callout.error { background: var(--red-dim); border: 1px solid rgba(248,113,113,0.2); }
+  .callout.error .callout-icon, .callout.error strong { color: var(--red); }
+
+  /* ─── SVG DIAGRAM ────────────────────────────── */
+  .diagram-wrap {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 2rem 1.5rem;
+    margin: 1.5rem 0;
+    overflow-x: auto;
+  }
+
+  /* ─── PREREQ LIST ────────────────────────────── */
+  .prereq-list {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+    gap: 1rem;
+    margin: 1.5rem 0;
+  }
+  .prereq-item {
+    display: flex;
+    align-items: flex-start;
+    gap: .8rem;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 1rem 1.1rem;
+  }
+  .prereq-check {
+    width: 22px; height: 22px;
+    display: flex; align-items: center; justify-content: center;
+    background: var(--green-dim);
+    border: 1px solid rgba(74,222,128,0.3);
+    border-radius: 50%;
+    font-size: .8rem;
+    color: var(--green);
+    flex-shrink: 0;
+    margin-top: .15rem;
+  }
+  .prereq-item h4 { font-size: .9rem; font-weight: 700; color: #fff; margin: 0 0 .2rem; }
+  .prereq-item p { font-size: .82rem; color: var(--text-muted); margin: 0; }
+
+  /* ─── ROUTING DIAGRAM ────────────────────────── */
+  .routing-diagram {
+    background: #0d0d1a;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 1.5rem;
+    margin: 1rem 0;
+    font-family: 'SFMono-Regular', Consolas, monospace;
+    font-size: .82rem;
+    line-height: 1.9;
+    color: var(--text);
+    overflow-x: auto;
+  }
+  .routing-diagram .msg { color: var(--yellow); font-weight: 700; }
+  .routing-diagram .arrow { color: var(--blue); }
+  .routing-diagram .match { color: var(--green); }
+  .routing-diagram .skip { color: var(--text-dim); }
+  .routing-diagram .result { color: var(--orange); font-weight: 700; }
+
+  /* ─── ROUTING EXAMPLES ───────────────────────── */
+  .routing-examples { display: flex; flex-direction: column; gap: .8rem; margin: 1rem 0; }
+  .routing-ex {
+    display: flex;
+    align-items: flex-start;
+    gap: 1rem;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: .9rem 1.1rem;
+    font-size: .88rem;
+  }
+  .routing-ex .ex-msg { color: var(--yellow); font-style: italic; flex: 1; }
+  .routing-ex .ex-arrow { color: var(--text-dim); }
+  .routing-ex .ex-result { color: var(--green); font-weight: 600; }
+
+  /* ─── THREAD VISUAL ──────────────────────────── */
+  .thread-compare {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1rem;
+    margin: 1.5rem 0;
+  }
+  @media (max-width: 600px) { .thread-compare { grid-template-columns: 1fr; } }
+  .thread-box {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 1.2rem;
+  }
+  .thread-box h4 {
+    font-size: .85rem;
+    font-weight: 700;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: .8px;
+    margin-bottom: .8rem;
+  }
+  .thread-box h4.enabled { color: var(--green); }
+  .thread-session {
+    font-family: 'SFMono-Regular', Consolas, monospace;
+    font-size: .76rem;
+    padding: .35rem .65rem;
+    border-radius: 5px;
+    margin-bottom: .4rem;
+    border: 1px solid var(--border);
+    color: var(--text-dim);
+  }
+  .thread-session.isolated { border-color: rgba(77,163,255,0.3); background: var(--blue-dim); color: var(--blue); }
+
+  /* ─── CONFIG TABLE ───────────────────────────── */
+  .config-table-wrap { overflow-x: auto; margin: 1.5rem 0; }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: .84rem;
+  }
+  th {
+    text-align: left;
+    padding: .6rem 1rem;
+    background: rgba(255,255,255,0.03);
+    border-bottom: 1px solid var(--border);
+    color: var(--text-muted);
+    font-size: .75rem;
+    font-weight: 700;
+    letter-spacing: .8px;
+    text-transform: uppercase;
+    white-space: nowrap;
+  }
+  td {
+    padding: .7rem 1rem;
+    border-bottom: 1px solid var(--border-dim);
+    vertical-align: top;
+    color: var(--text);
+  }
+  tr:hover td { background: rgba(255,255,255,0.02); }
+  .td-key { font-family: 'SFMono-Regular', Consolas, monospace; color: var(--blue); font-size: .8rem; white-space: nowrap; }
+  .td-type { color: var(--purple); font-family: monospace; font-size: .8rem; white-space: nowrap; }
+  .td-default { color: var(--text-dim); font-family: monospace; font-size: .8rem; }
+  .badge-req {
+    display: inline-block;
+    background: var(--red-dim);
+    border: 1px solid rgba(248,113,113,0.25);
+    color: var(--red);
+    font-size: .65rem;
+    font-weight: 700;
+    padding: .1em .45em;
+    border-radius: 3px;
+    letter-spacing: .5px;
+    text-transform: uppercase;
+  }
+  .badge-opt {
+    display: inline-block;
+    background: rgba(255,255,255,0.04);
+    border: 1px solid var(--border);
+    color: var(--text-dim);
+    font-size: .65rem;
+    font-weight: 700;
+    padding: .1em .45em;
+    border-radius: 3px;
+    letter-spacing: .5px;
+    text-transform: uppercase;
+  }
+
+  /* ─── TROUBLESHOOT ───────────────────────────── */
+  .trouble-list { display: flex; flex-direction: column; gap: .8rem; margin: 1rem 0; }
+  .trouble-item {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    overflow: hidden;
+  }
+  .trouble-header {
+    display: flex;
+    align-items: center;
+    gap: .8rem;
+    padding: .9rem 1.2rem;
+    cursor: pointer;
+    transition: background .15s;
+  }
+  .trouble-header:hover { background: rgba(255,255,255,0.02); }
+  .trouble-icon { font-size: 1rem; flex-shrink: 0; }
+  .trouble-title { font-size: .9rem; font-weight: 600; color: #fff; }
+  .trouble-body {
+    padding: 0 1.2rem 1rem calc(.8rem + 1rem + 1.2rem);
+    font-size: .88rem;
+    color: var(--text-muted);
+    border-top: 1px solid var(--border-dim);
+    padding-top: .8rem;
+  }
+  .trouble-body p { margin-bottom: .4rem; }
+
+  /* ─── FOOTER ─────────────────────────────────── */
+  .footer {
+    margin-left: var(--sidebar-w);
+    border-top: 1px solid var(--border);
+    padding: 2rem clamp(1.5rem, 5vw, 4rem) 3rem;
+    max-width: 900px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: gap;
+    gap: 1rem;
+  }
+  .footer-links { display: flex; gap: 1.5rem; flex-wrap: wrap; }
+  .footer-links a { color: var(--text-dim); font-size: .82rem; text-decoration: none; }
+  .footer-links a:hover { color: var(--blue); }
+  .footer-right { display: flex; align-items: center; gap: 1rem; color: var(--text-dim); font-size: .8rem; }
+  .built-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: .35rem;
+    background: rgba(255,255,255,0.04);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: .3rem .7rem;
+    font-size: .75rem;
+    color: var(--text-dim);
+  }
+
+  /* ─── RESPONSIVE ─────────────────────────────── */
+  @media (max-width: 768px) {
+    .sidebar { transform: translateX(-100%); transition: transform .2s; }
+    .sidebar.open { transform: translateX(0); }
+    .main, .footer { margin-left: 0; }
+    .layout { padding-top: var(--header-h); }
+  }
+
+  /* Prism overrides */
+  code[class*="language-"], pre[class*="language-"] {
+    text-shadow: none !important;
+  }
+  :not(pre) > code[class*="language-"] { padding: 0 !important; }
+
+  /* Lists */
+  ul, ol { padding-left: 1.4rem; margin-bottom: .8rem; }
+  li { margin-bottom: .3rem; color: var(--text); font-size: .92rem; }
+  li code { font-size: .8em; }
+</style>
+</head>
+<body>
+
+<!-- HEADER -->
+<header class="header">
+  <a class="header-logo" href="#">OpenClaw <span>Plugins</span></a>
+  <span class="header-sep">/</span>
+  <span class="header-title">googlechatpubsub</span>
+  <span class="header-badge">⚡ Setup Guide</span>
+</header>
+
+<!-- LAYOUT -->
+<div class="layout">
+
+  <!-- SIDEBAR -->
+  <aside class="sidebar" id="sidebar">
+    <div class="sidebar-section">Getting Started</div>
+    <nav>
+      <a href="#overview" class="active"><span class="num">1</span> Overview</a>
+      <a href="#gcp-setup"><span class="num">2</span> GCP Setup</a>
+      <a href="#installation"><span class="num">3</span> Installation</a>
+      <a href="#configuration"><span class="num">4</span> Configuration</a>
+    </nav>
+
+    <div class="sidebar-section">Authorization</div>
+    <nav>
+      <a href="#oauth"><span class="num">5</span> OAuth Flow</a>
+      <a href="#subscriptions"><span class="num">6</span> Workspace Events</a>
+    </nav>
+
+    <div class="sidebar-section">Routing & Behavior</div>
+    <nav>
+      <a href="#routing"><span class="num">7</span> Multi-Agent Routing</a>
+      <a href="#threads"><span class="num">8</span> Thread Behavior</a>
+    </nav>
+
+    <div class="sidebar-section">Reference</div>
+    <nav>
+      <a href="#troubleshooting"><span class="num">9</span> Troubleshooting</a>
+      <a href="#config-ref"><span class="num">10</span> Config Reference</a>
+    </nav>
+  </aside>
+
+  <!-- MAIN -->
+  <main class="main">
+
+    <!-- PAGE HERO -->
+    <div class="page-hero">
+      <div class="tag">📦 Channel Plugin</div>
+      <h1><code>googlechatpubsub</code><br>Setup &amp; Installation Guide</h1>
+      <p>Connect OpenClaw agents to Google Chat spaces via Pub/Sub — no @mention required. Full multi-agent routing, thread isolation, and auto-renewing subscriptions.</p>
+      <div class="meta">
+        <span class="meta-item">📌 Version <strong>0.1.0-alpha</strong></span>
+        <span class="meta-item">🔧 Plugin type <strong>channel</strong></span>
+        <span class="meta-item">☁️ Requires <strong>GCP + Workspace</strong></span>
+      </div>
+    </div>
+
+    <!-- ─── SECTION 1: OVERVIEW ─── -->
+    <section class="section" id="overview">
+      <div class="section-header">
+        <div class="section-num">1</div>
+        <h2>Overview</h2>
+      </div>
+      <p class="section-sub">What it does, how it works, and what you need before you start.</p>
+
+      <h3><span class="h3-dot"></span>What the Plugin Does</h3>
+      <p>
+        The <code>googlechatpubsub</code> plugin enables OpenClaw agents to <strong>listen to any Google Chat space continuously</strong> — without requiring @mentions. Messages are delivered via <strong>Google Cloud Pub/Sub</strong> in near-real-time, then routed to one or more configured agents based on keyword matching or always-on listeners.
+      </p>
+      <p>
+        Unlike the standard Chat REST API (which requires polling or webhooks), this plugin leverages the <strong>Google Workspace Events API</strong> to subscribe to space events and push them to a Pub/Sub topic. This gives you low-latency, reliable message delivery with automatic subscription renewal.
+      </p>
+
+      <h3><span class="h3-dot"></span>How It Works</h3>
+      <p>
+        When a message is sent in a monitored Chat space, Google's Workspace Events API fires an event that lands in your Pub/Sub topic. The plugin polls that subscription, decodes the event, and passes the message through OpenClaw's pipeline. Agents formulate a reply, which is sent back via the Google Chat REST API — all in under a second on a healthy connection.
+      </p>
+
+      <!-- SVG Architecture Diagram -->
+      <div class="diagram-wrap">
+        <svg viewBox="0 0 780 120" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif">
+          <!-- Nodes -->
+          <!-- Google Chat -->
+          <rect x="10" y="30" width="120" height="60" rx="10" fill="#1a1a40" stroke="#2a2a65" stroke-width="1.5"/>
+          <text x="70" y="57" text-anchor="middle" fill="#4da3ff" font-size="11" font-weight="700">Google Chat</text>
+          <text x="70" y="73" text-anchor="middle" fill="#6a6a88" font-size="9">Space message</text>
+
+          <!-- Arrow 1 -->
+          <path d="M 132 60 L 158 60" stroke="#4da3ff" stroke-width="1.5" marker-end="url(#arr)" fill="none"/>
+          <text x="145" y="54" text-anchor="middle" fill="#6a6a88" font-size="8">event</text>
+
+          <!-- Workspace Events API -->
+          <rect x="160" y="30" width="130" height="60" rx="10" fill="#1a1a40" stroke="#2a2a65" stroke-width="1.5"/>
+          <text x="225" y="55" text-anchor="middle" fill="#4ade80" font-size="10" font-weight="700">Workspace</text>
+          <text x="225" y="68" text-anchor="middle" fill="#4ade80" font-size="10" font-weight="700">Events API</text>
+          <text x="225" y="82" text-anchor="middle" fill="#6a6a88" font-size="8">subscription</text>
+
+          <!-- Arrow 2 -->
+          <path d="M 292 60 L 318 60" stroke="#4da3ff" stroke-width="1.5" marker-end="url(#arr)" fill="none"/>
+          <text x="305" y="54" text-anchor="middle" fill="#6a6a88" font-size="8">push</text>
+
+          <!-- Pub/Sub -->
+          <rect x="320" y="30" width="110" height="60" rx="10" fill="#1a1a40" stroke="#2a2a65" stroke-width="1.5"/>
+          <text x="375" y="57" text-anchor="middle" fill="#fbbf24" font-size="11" font-weight="700">Cloud Pub/Sub</text>
+          <text x="375" y="73" text-anchor="middle" fill="#6a6a88" font-size="9">topic + sub</text>
+
+          <!-- Arrow 3 -->
+          <path d="M 432 60 L 458 60" stroke="#4da3ff" stroke-width="1.5" marker-end="url(#arr)" fill="none"/>
+          <text x="445" y="54" text-anchor="middle" fill="#6a6a88" font-size="8">poll</text>
+
+          <!-- Plugin -->
+          <rect x="460" y="30" width="110" height="60" rx="10" fill="#1a1a40" stroke="#4da3ff" stroke-width="1.5"/>
+          <text x="515" y="57" text-anchor="middle" fill="#4da3ff" font-size="11" font-weight="700">Plugin</text>
+          <text x="515" y="73" text-anchor="middle" fill="#6a6a88" font-size="9">decode + route</text>
+
+          <!-- Arrow 4 -->
+          <path d="M 572 60 L 598 60" stroke="#4da3ff" stroke-width="1.5" marker-end="url(#arr)" fill="none"/>
+          <text x="585" y="54" text-anchor="middle" fill="#6a6a88" font-size="8">msg</text>
+
+          <!-- OpenClaw -->
+          <rect x="600" y="30" width="110" height="60" rx="10" fill="#1a1a40" stroke="#2a2a65" stroke-width="1.5"/>
+          <text x="655" y="57" text-anchor="middle" fill="#a78bfa" font-size="11" font-weight="700">OpenClaw</text>
+          <text x="655" y="73" text-anchor="middle" fill="#6a6a88" font-size="9">agent pipeline</text>
+
+          <!-- Reply arrow (curved back) -->
+          <path d="M 710 90 Q 390 130 130 90" stroke="#4ade80" stroke-width="1.2" stroke-dasharray="4 3" fill="none" marker-end="url(#arr-green)"/>
+          <text x="420" y="125" text-anchor="middle" fill="#4ade80" font-size="9">reply via Chat API</text>
+
+          <!-- Arrow markers -->
+          <defs>
+            <marker id="arr" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+              <polygon points="0 0, 8 3, 0 6" fill="#4da3ff"/>
+            </marker>
+            <marker id="arr-green" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+              <polygon points="0 0, 8 3, 0 6" fill="#4ade80"/>
+            </marker>
+          </defs>
+        </svg>
+      </div>
+
+      <h3><span class="h3-dot"></span>Prerequisites</h3>
+      <div class="prereq-list">
+        <div class="prereq-item">
+          <div class="prereq-check">✓</div>
+          <div>
+            <h4>OpenClaw Gateway</h4>
+            <p>Running locally or on a server. Check with <code>openclaw gateway status</code>.</p>
+          </div>
+        </div>
+        <div class="prereq-item">
+          <div class="prereq-check">✓</div>
+          <div>
+            <h4>Google Workspace Account</h4>
+            <p>With admin access to configure OAuth consent and Workspace Events API.</p>
+          </div>
+        </div>
+        <div class="prereq-item">
+          <div class="prereq-check">✓</div>
+          <div>
+            <h4>Google Cloud Project</h4>
+            <p>Billing enabled. You'll create a Pub/Sub topic and OAuth credentials here.</p>
+          </div>
+        </div>
+        <div class="prereq-item">
+          <div class="prereq-check">✓</div>
+          <div>
+            <h4>Node.js ≥ 18</h4>
+            <p>Required to run the plugin. OpenClaw ships with a compatible runtime.</p>
+          </div>
+        </div>
+        <div class="prereq-item">
+          <div class="prereq-check">✓</div>
+          <div>
+            <h4>Google Chat Space</h4>
+            <p>An existing space where your bot account is a member.</p>
+          </div>
+        </div>
+        <div class="prereq-item">
+          <div class="prereq-check">✓</div>
+          <div>
+            <h4>Agent(s) Configured</h4>
+            <p>At least one OpenClaw agent defined in <code>openclaw.json</code> to receive messages.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ─── OAUTH USER SPACE MEMBERSHIP WARNING ─── -->
+    <div class="callout warn" style="margin: 0 0 2rem 0; border-left: 3px solid rgba(251,191,36,0.6);">
+      <span class="callout-icon">⚠️</span>
+      <div class="callout-body">
+        <strong>OAuth User Must Be a Member of Every Monitored Space</strong>
+        <p style="margin: .5rem 0 .75rem;">The Workspace Events API creates subscriptions scoped to the <em>OAuth user's</em> access. If that user isn't in the space, <code>subscriptions.create</code> will fail — the API can't subscribe to events in a space the user can't see. The <code>chat.messages.readonly</code> scope only grants access to messages in spaces the user <strong>belongs to</strong>.</p>
+        <p style="margin: .5rem 0 .4rem;"><strong style="color: var(--yellow);">Two separate auth paths:</strong></p>
+        <ul style="margin: .3rem 0 .75rem 1.2rem; line-height: 1.8;">
+          <li><strong>Listening</strong> (Workspace Events subscription) → OAuth user token → <em>user must be a space member</em></li>
+          <li><strong>Replying</strong> (Chat API send) → Bot service account → app must be installed in the space</li>
+        </ul>
+        <p style="margin: .5rem 0 .75rem;"><strong>Both are required</strong> — the bot app being installed in the space is <strong>not</strong> enough for listening. The OAuth user must also be present.</p>
+        <p style="margin: .5rem 0 .4rem;"><strong style="color: var(--yellow);">Workarounds if you can't add the OAuth user:</strong></p>
+        <ol style="margin: .3rem 0 .75rem 1.2rem; line-height: 1.8;">
+          <li><strong>Domain-wide delegation (DWD)</strong> — service account impersonates a user who IS in the space. Also extends subscription TTL from 4h to 24h. Requires Workspace admin configuration.</li>
+          <li><strong>App auth (Developer Preview)</strong> — Google is working on letting service accounts create subscriptions directly. Not stable yet.</li>
+        </ol>
+        <p style="margin: .5rem 0 0;"><strong>Recommendation:</strong> Use the same Google Workspace admin account that manages the Chat app as the OAuth user. Since they typically create/manage spaces anyway, access isn't a blocker.</p>
+      </div>
+    </div>
+
+    <!-- ─── SECTION 2: GCP SETUP ─── -->
+    <section class="section" id="gcp-setup">
+      <div class="section-header">
+        <div class="section-num">2</div>
+        <h2>GCP Setup</h2>
+      </div>
+      <p class="section-sub">Six steps to configure Google Cloud. Work through them in order.</p>
+
+      <div class="steps">
+
+        <!-- Step 1 -->
+        <div class="step-card">
+          <div class="step-num-badge">1</div>
+          <div class="step-body">
+            <h4>Enable APIs</h4>
+            <p>In the <a href="https://console.cloud.google.com/apis/library" target="_blank">GCP API Library</a>, search for and enable both:</p>
+            <ul>
+              <li><strong>Cloud Pub/Sub API</strong> — <code>pubsub.googleapis.com</code></li>
+              <li><strong>Google Workspace Events API</strong> — <code>workspaceevents.googleapis.com</code></li>
+            </ul>
+            <p>Also ensure the <strong>Google Chat API</strong> is enabled (usually already on for Workspace accounts).</p>
+            <div class="screenshot-placeholder">
+              <div class="icon">🖼️</div>
+              <div class="info">
+                <strong>GCP Console → APIs &amp; Services → Library</strong>
+                Search "Pub/Sub" → Enable. Then search "Workspace Events" → Enable. Both should show a green checkmark when active.
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Step 2 -->
+        <div class="step-card">
+          <div class="step-num-badge">2</div>
+          <div class="step-body">
+            <h4>Create Pub/Sub Topic</h4>
+            <p>Go to <strong>Pub/Sub → Topics → Create Topic</strong>. Use a descriptive name like <code>openclaw-gchat-events</code>.</p>
+            <ul>
+              <li>Check <strong>"Add a default subscription"</strong> — this creates <code>openclaw-gchat-events-sub</code> automatically</li>
+              <li>Leave other settings at defaults and click <strong>Create</strong></li>
+            </ul>
+            <p><strong>Add IAM binding:</strong> After creating the topic, go to its <strong>Permissions</strong> tab and add:</p>
+            <ul>
+              <li><strong>Principal:</strong> <code>chat-api-push@system.gserviceaccount.com</code></li>
+              <li><strong>Role:</strong> <code>Pub/Sub Publisher</code></li>
+            </ul>
+            <div class="callout warn">
+              <span class="callout-icon">⚠️</span>
+              <div class="callout-body">
+                <strong>This IAM binding is critical.</strong>
+                Without it, Google Chat cannot push events to your topic. The subscription will exist but receive no messages.
+              </div>
+            </div>
+            <div class="screenshot-placeholder">
+              <div class="icon">🖼️</div>
+              <div class="info">
+                <strong>Pub/Sub → Topics → [your-topic] → Permissions → Add Principal</strong>
+                Enter <code>chat-api-push@system.gserviceaccount.com</code>, select role "Pub/Sub Publisher", save.
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Step 3 -->
+        <div class="step-card">
+          <div class="step-num-badge">3</div>
+          <div class="step-body">
+            <h4>OAuth Consent Screen</h4>
+            <p>Go to <strong>APIs &amp; Services → OAuth consent screen</strong>.</p>
+            <ul>
+              <li>User type: <strong>Internal</strong> (restricts to your Workspace org — recommended)</li>
+              <li>App name: something like <code>OpenClaw Chat Integration</code></li>
+              <li>Support email: your admin email</li>
+              <li>Add your domain to Authorized domains</li>
+            </ul>
+            <p>You do <strong>not</strong> need to submit for verification for Internal apps.</p>
+            <div class="screenshot-placeholder">
+              <div class="icon">🖼️</div>
+              <div class="info">
+                <strong>APIs &amp; Services → OAuth consent screen → Create</strong>
+                Select "Internal", fill in app name and contact email, click Save and Continue.
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Step 4 -->
+        <div class="step-card">
+          <div class="step-num-badge">4</div>
+          <div class="step-body">
+            <h4>Create OAuth Client</h4>
+            <p>Go to <strong>APIs &amp; Services → Credentials → Create Credentials → OAuth client ID</strong>.</p>
+            <ul>
+              <li>Application type: <strong>Web application</strong></li>
+              <li>Name: <code>OpenClaw Local Dev</code></li>
+              <li>Authorized redirect URIs: <code>http://localhost:3000/oauth/callback</code></li>
+            </ul>
+            <p>After creating, download the credentials JSON or copy the <strong>Client ID</strong> and <strong>Client Secret</strong> — you'll need both in your config.</p>
+            <div class="screenshot-placeholder">
+              <div class="icon">🖼️</div>
+              <div class="info">
+                <strong>Credentials → Create → OAuth client ID → Web application</strong>
+                Add redirect URI: <code>http://localhost:3000/oauth/callback</code>. Note the Client ID and Secret from the confirmation dialog.
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Step 5 -->
+        <div class="step-card">
+          <div class="step-num-badge">5</div>
+          <div class="step-body">
+            <h4>Add OAuth Scopes</h4>
+            <p>Back on the OAuth consent screen, go to <strong>Scopes</strong> and add:</p>
+            <ul>
+              <li><code>https://www.googleapis.com/auth/chat.messages.readonly</code> — read messages</li>
+              <li><code>https://www.googleapis.com/auth/chat.spaces.readonly</code> — read space metadata</li>
+              <li><code>https://www.googleapis.com/auth/chat.messages.reactions.create</code> — add emoji reactions</li>
+              <li><code>https://www.googleapis.com/auth/chat.messages</code> — send replies</li>
+            </ul>
+            <div class="callout info">
+              <span class="callout-icon">ℹ️</span>
+              <div class="callout-body">
+                <strong>Scopes update immediately for Internal apps.</strong>
+                You may need to re-authorize if you add scopes after the initial token exchange.
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Step 6 -->
+        <div class="step-card">
+          <div class="step-num-badge">6</div>
+          <div class="step-body">
+            <h4>Get the Space ID</h4>
+            <p>The plugin needs the Google Chat <strong>space name</strong> in the format <code>spaces/XXXXXXXXXXX</code>.</p>
+            <p><strong>From URL:</strong> Open the space in a browser. The URL looks like:</p>
+            <div class="code-block">
+              <div class="code-block-header"><span class="code-lang">text</span><button class="copy-btn" onclick="copyCode(this)">⎘ Copy</button></div>
+              <pre><code class="language-text">https://chat.google.com/room/AAQA6hUKWfM
+                                      ↓
+                              spaces/AAQA6hUKWfM</code></pre>
+            </div>
+            <p><strong>From API:</strong> List your spaces to find the name:</p>
+            <div class="code-block">
+              <div class="code-block-header"><span class="code-lang">bash</span><button class="copy-btn" onclick="copyCode(this)">⎘ Copy</button></div>
+              <pre><code class="language-bash">curl -H "Authorization: Bearer $ACCESS_TOKEN" \
+  "https://chat.googleapis.com/v1/spaces" | jq '.spaces[] | {name, displayName}'</code></pre>
+            </div>
+            <p>The <code>name</code> field is what you use in config — e.g., <code>spaces/AAQA6hUKWfM</code>.</p>
+          </div>
+        </div>
+
+      </div><!-- /steps -->
+    </section>
+
+    <!-- ─── SECTION 3: INSTALLATION ─── -->
+    <section class="section" id="installation">
+      <div class="section-header">
+        <div class="section-num">3</div>
+        <h2>Plugin Installation</h2>
+      </div>
+      <p class="section-sub">Copy the plugin files into OpenClaw's extensions directory.</p>
+
+      <h3><span class="h3-dot"></span>Clone the Repository</h3>
+      <div class="code-block">
+        <div class="code-block-header"><span class="code-lang">bash</span><button class="copy-btn" onclick="copyCode(this)">⎘ Copy</button></div>
+        <pre><code class="language-bash"># Clone the plugin repo directly into the extensions directory
+git clone https://github.com/teyou/openclaw-googlechatpubsub-plugin.git \
+  ~/.openclaw/extensions/googlechatpubsub</code></pre>
+      </div>
+
+      <h3><span class="h3-dot"></span>Verify Files</h3>
+      <div class="code-block">
+        <div class="code-block-header"><span class="code-lang">bash</span><button class="copy-btn" onclick="copyCode(this)">⎘ Copy</button></div>
+        <pre><code class="language-bash">ls ~/.openclaw/extensions/googlechatpubsub/
+# Should output:
+# CONTRIBUTING.md  LICENSE  README.md  index.ts  openclaw.plugin.json</code></pre>
+      </div>
+
+      <div class="callout info">
+        <span class="callout-icon">ℹ️</span>
+        <div class="callout-body">
+          <strong>Source &amp; docs:</strong> <a href="https://github.com/teyou/openclaw-googlechatpubsub-plugin" target="_blank" style="color: #60a5fa;">github.com/teyou/openclaw-googlechatpubsub-plugin</a><br>
+          The repo includes the full plugin manifest (<code>openclaw.plugin.json</code>), implementation (<code>index.ts</code>), setup instructions, and contribution guidelines.
+        </div>
+      </div>
+
+      <div class="callout success">
+        <span class="callout-icon">✅</span>
+        <div class="callout-body">
+          <strong>Plugin discovered automatically.</strong>
+          OpenClaw scans the <code>extensions/</code> directory on startup. Once files are in place and the plugin is added to <code>plugins.allow</code> in config, it will be loaded automatically.
+        </div>
+      </div>
+    </section>
+
+    <!-- ─── SECTION 4: CONFIGURATION ─── -->
+    <section class="section" id="configuration">
+      <div class="section-header">
+        <div class="section-num">4</div>
+        <h2>Configuration</h2>
+      </div>
+      <p class="section-sub">Add the plugin block and agent bindings to your <code>openclaw.json</code>.</p>
+
+      <h3><span class="h3-dot"></span>Plugin Block</h3>
+      <p>Add the following to your <code>openclaw.json</code>. If a <code>plugins</code> key already exists, merge carefully.</p>
+      <div class="code-block">
+        <div class="code-block-header"><span class="code-lang">jsonc</span><button class="copy-btn" onclick="copyCode(this)">⎘ Copy</button></div>
+        <pre><code class="language-json">{
+  "plugins": {
+    "allow": ["googlechatpubsub"],
+    "entries": {
+      "googlechatpubsub": {
+        "enabled": true,
+        "config": {
+          "clientId":         "123456789-abc.apps.googleusercontent.com",
+          "clientSecret":     "GOCSPX-your-client-secret",
+          "projectId":        "my-gcp-project-id",
+          "topicName":        "openclaw-gchat-events",
+          "subscriptionName": "openclaw-gchat-events-sub",
+          "tokensFile":       "~/.openclaw/gchat-tokens.json",
+          "pollIntervalMs":   2000,
+          "maxMessages":      10,
+          "bindings": [
+            {
+              "space": "spaces/ABC123example",
+              "replyInThread": true,
+              "threadSessionIsolation": true,
+              "agents": [
+                {
+                  "agentId": "chief-of-staff",
+                  "alwaysListen": true
+                },
+                {
+                  "agentId": "engineer",
+                  "mentionKeyword": "eng"
+                },
+                {
+                  "agentId": "designer",
+                  "mentionKeyword": "design"
+                }
+              ]
+            }
+          ]
+        }
+      }
+    }
+  }
+}</code></pre>
+      </div>
+
+      <h3><span class="h3-dot"></span>Root-Level Bindings</h3>
+      <p>
+        To route incoming Pub/Sub messages to the correct OpenClaw agent sessions, add a <code>bindings</code> array at the root of <code>openclaw.json</code>. Each binding maps an <code>accountId</code> (which matches the <code>agentId</code> in the plugin config) to a specific agent.
+      </p>
+      <div class="code-block">
+        <div class="code-block-header"><span class="code-lang">json</span><button class="copy-btn" onclick="copyCode(this)">⎘ Copy</button></div>
+        <pre><code class="language-json">{
+  "bindings": [
+    {
+      "agentId": "chief-of-staff",
+      "match": {
+        "channel": "googlechatpubsub",
+        "accountId": "chief-of-staff"
+      }
+    },
+    {
+      "agentId": "engineer",
+      "match": {
+        "channel": "googlechatpubsub",
+        "accountId": "engineer"
+      }
+    },
+    {
+      "agentId": "designer",
+      "match": {
+        "channel": "googlechatpubsub",
+        "accountId": "designer"
+      }
+    }
+  ]
+}</code></pre>
+      </div>
+
+      <div class="callout warn">
+        <span class="callout-icon">⚠️</span>
+        <div class="callout-body">
+          <strong>agentId must match in both places.</strong>
+          The <code>agentId</code> in the plugin's <code>bindings[].agents[]</code> must match the <code>accountId</code> in the root <code>bindings[].match</code> block — and both must correspond to a real agent key in your <code>agents</code> config.
+        </div>
+      </div>
+
+      <h3><span class="h3-dot"></span>Multiple Spaces</h3>
+      <p>To monitor more than one space, add additional entries to the <code>bindings</code> array inside the plugin config:</p>
+      <div class="code-block">
+        <div class="code-block-header"><span class="code-lang">json</span><button class="copy-btn" onclick="copyCode(this)">⎘ Copy</button></div>
+        <pre><code class="language-json">"bindings": [
+  {
+    "space": "spaces/ABC123example",
+    "replyInThread": true,
+    "threadSessionIsolation": true,
+    "agents": [
+      { "agentId": "chief-of-staff", "alwaysListen": true }
+    ]
+  },
+  {
+    "space": "spaces/XYZ789another",
+    "replyInThread": false,
+    "agents": [
+      { "agentId": "engineer", "alwaysListen": true }
+    ]
+  }
+]</code></pre>
+      </div>
+    </section>
+
+    <!-- ─── SECTION 5: OAUTH FLOW ─── -->
+    <section class="section" id="oauth">
+      <div class="section-header">
+        <div class="section-num">5</div>
+        <h2>OAuth Authorization Flow</h2>
+      </div>
+      <p class="section-sub">One-time setup. After the initial token exchange, the plugin auto-refreshes.</p>
+
+      <div class="callout info">
+        <span class="callout-icon">ℹ️</span>
+        <div class="callout-body">
+          <strong>This is a one-time manual step.</strong>
+          After you complete the flow below and save your tokens, the plugin handles all future token refreshes automatically. You only need to repeat this if the refresh token is revoked (e.g., user revokes app access from Google Account settings).
+        </div>
+      </div>
+
+      <div class="steps">
+        <div class="step-card">
+          <div class="step-num-badge">1</div>
+          <div class="step-body">
+            <h4>Build the Authorization URL</h4>
+            <p>Construct the URL manually or use the plugin's built-in helper command (if available). The URL format is:</p>
+            <div class="code-block">
+              <div class="code-block-header"><span class="code-lang">text</span><button class="copy-btn" onclick="copyCode(this)">⎘ Copy</button></div>
+              <pre><code class="language-text">https://accounts.google.com/o/oauth2/v2/auth
+  ?client_id=YOUR_CLIENT_ID
+  &redirect_uri=http://localhost:3000/oauth/callback
+  &response_type=code
+  &scope=https://www.googleapis.com/auth/chat.messages.readonly
+         https://www.googleapis.com/auth/chat.spaces.readonly
+         https://www.googleapis.com/auth/chat.messages.reactions.create
+         https://www.googleapis.com/auth/chat.messages
+  &access_type=offline
+  &prompt=consent</code></pre>
+            </div>
+            <p>Replace <code>YOUR_CLIENT_ID</code> with your OAuth client ID. The <code>access_type=offline</code> parameter is essential — it ensures you receive a <code>refresh_token</code>.</p>
+          </div>
+        </div>
+
+        <div class="step-card">
+          <div class="step-num-badge">2</div>
+          <div class="step-body">
+            <h4>Open URL &amp; Grant Consent</h4>
+            <p>Open the URL in a browser logged into your Workspace account. Google will show the OAuth consent screen listing the requested scopes. Click <strong>Allow</strong>.</p>
+            <div class="screenshot-placeholder">
+              <div class="icon">🔐</div>
+              <div class="info">
+                <strong>Google OAuth consent screen</strong>
+                Shows app name, requested scopes (read messages, spaces, reactions), and Allow/Deny buttons.
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="step-card">
+          <div class="step-num-badge">3</div>
+          <div class="step-body">
+            <h4>Copy the Authorization Code</h4>
+            <p>After consent, Google redirects to <code>http://localhost:3000/oauth/callback?code=XXXXXXXX</code>. Copy the <code>code</code> query parameter value.</p>
+            <div class="callout warn">
+              <span class="callout-icon">⏱️</span>
+              <div class="callout-body">
+                <strong>Codes expire in ~60 seconds.</strong> Proceed to the next step immediately.
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="step-card">
+          <div class="step-num-badge">4</div>
+          <div class="step-body">
+            <h4>Exchange Code for Tokens</h4>
+            <p>POST the code to Google's token endpoint:</p>
+            <div class="code-block">
+              <div class="code-block-header"><span class="code-lang">bash</span><button class="copy-btn" onclick="copyCode(this)">⎘ Copy</button></div>
+              <pre><code class="language-bash">curl -X POST https://oauth2.googleapis.com/token \
+  -d "code=AUTHORIZATION_CODE_HERE" \
+  -d "client_id=YOUR_CLIENT_ID" \
+  -d "client_secret=YOUR_CLIENT_SECRET" \
+  -d "redirect_uri=http://localhost:3000/oauth/callback" \
+  -d "grant_type=authorization_code"</code></pre>
+            </div>
+            <p>You'll receive a JSON response with <code>access_token</code>, <code>refresh_token</code>, and <code>expires_in</code>.</p>
+          </div>
+        </div>
+
+        <div class="step-card">
+          <div class="step-num-badge">5</div>
+          <div class="step-body">
+            <h4>Save Tokens to File</h4>
+            <p>Save the full JSON response to the path configured in <code>tokensFile</code>:</p>
+            <div class="code-block">
+              <div class="code-block-header"><span class="code-lang">bash</span><button class="copy-btn" onclick="copyCode(this)">⎘ Copy</button></div>
+              <pre><code class="language-bash">curl -X POST https://oauth2.googleapis.com/token \
+  -d "code=AUTHORIZATION_CODE_HERE" \
+  -d "client_id=YOUR_CLIENT_ID" \
+  -d "client_secret=YOUR_CLIENT_SECRET" \
+  -d "redirect_uri=http://localhost:3000/oauth/callback" \
+  -d "grant_type=authorization_code" \
+  | jq '.' > ~/.openclaw/gchat-tokens.json
+
+# Verify it contains a refresh_token:
+cat ~/.openclaw/gchat-tokens.json | jq '.refresh_token'</code></pre>
+            </div>
+          </div>
+        </div>
+
+        <div class="step-card">
+          <div class="step-num-badge">6</div>
+          <div class="step-body">
+            <h4>Restart &amp; Verify</h4>
+            <p>Restart the OpenClaw gateway. The plugin will load the tokens, verify them, and start polling Pub/Sub.</p>
+            <div class="code-block">
+              <div class="code-block-header"><span class="code-lang">bash</span><button class="copy-btn" onclick="copyCode(this)">⎘ Copy</button></div>
+              <pre><code class="language-bash">openclaw gateway restart
+
+# Check plugin loaded successfully:
+openclaw plugins list</code></pre>
+            </div>
+            <p>You should see <code>googlechatpubsub</code> listed as <strong>active</strong>. Token auto-refresh runs in the background — you won't need to repeat this flow unless the refresh token is revoked.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ─── SECTION 6: WORKSPACE EVENTS ─── -->
+    <section class="section" id="subscriptions">
+      <div class="section-header">
+        <div class="section-num">6</div>
+        <h2>Workspace Events Subscription</h2>
+      </div>
+      <p class="section-sub">How the plugin creates and maintains Google Chat event subscriptions.</p>
+
+      <h3><span class="h3-dot"></span>Auto-Create on Startup</h3>
+      <p>
+        When the plugin starts, it calls the <strong>Workspace Events API</strong> to create a subscription for each configured space. Subscriptions deliver <code>google.workspace.chat.message.v1.created</code> events directly to your Pub/Sub topic.
+      </p>
+      <p>
+        You don't need to create subscriptions manually — the plugin handles this automatically. Check the OpenClaw logs on startup to see subscription creation:
+      </p>
+      <div class="code-block">
+        <div class="code-block-header"><span class="code-lang">text</span><button class="copy-btn" onclick="copyCode(this)">⎘ Copy</button></div>
+        <pre><code class="language-text">[googlechatpubsub] Creating subscription for spaces/ABC123example...
+[googlechatpubsub] Subscription created: subscriptions/abc-123-def-456
+[googlechatpubsub] Polling started (interval: 2000ms)</code></pre>
+      </div>
+
+      <h3><span class="h3-dot"></span>4-Hour TTL &amp; Auto-Renewal</h3>
+      <p>
+        Workspace Events subscriptions have a <strong>maximum TTL of 4 hours</strong>. The plugin tracks expiry times and automatically calls the <code>UpdateSubscription</code> API before expiry to extend the TTL. This is invisible to you during normal operation.
+      </p>
+      <p>If renewal fails (e.g., network issue), the plugin will log a warning and attempt to re-create the subscription on the next poll cycle.</p>
+      <div class="code-block">
+        <div class="code-block-header"><span class="code-lang">text</span><button class="copy-btn" onclick="copyCode(this)">⎘ Copy</button></div>
+        <pre><code class="language-text">[googlechatpubsub] Renewing subscription expiring in 5 minutes...
+[googlechatpubsub] Subscription renewed until 2024-01-15T14:30:00Z</code></pre>
+      </div>
+
+      <h3><span class="h3-dot"></span>Manually Check Subscriptions</h3>
+      <p>To list active subscriptions for your spaces:</p>
+      <div class="code-block">
+        <div class="code-block-header"><span class="code-lang">bash</span><button class="copy-btn" onclick="copyCode(this)">⎘ Copy</button></div>
+        <pre><code class="language-bash">curl -H "Authorization: Bearer $ACCESS_TOKEN" \
+  "https://workspaceevents.googleapis.com/v1/subscriptions" | jq '.'</code></pre>
+      </div>
+
+      <h3><span class="h3-dot"></span>Required IAM Permissions</h3>
+      <p>Recap of the IAM bindings needed for subscriptions to work end-to-end:</p>
+      <div class="config-table-wrap">
+        <table>
+          <thead>
+            <tr><th>Principal</th><th>Resource</th><th>Role</th><th>Purpose</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td class="td-key">chat-api-push@system.gserviceaccount.com</td>
+              <td>Pub/Sub Topic</td>
+              <td><code>roles/pubsub.publisher</code></td>
+              <td>Allows Chat to push events to your topic</td>
+            </tr>
+            <tr>
+              <td class="td-key">Your OAuth user account</td>
+              <td>GCP Project</td>
+              <td><code>roles/pubsub.subscriber</code></td>
+              <td>Allows the plugin to pull from the subscription</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- ─── SECTION 7: MULTI-AGENT ROUTING ─── -->
+    <section class="section" id="routing">
+      <div class="section-header">
+        <div class="section-num">7</div>
+        <h2>Multi-Agent Routing</h2>
+      </div>
+      <p class="section-sub">How incoming messages are matched and dispatched to agents.</p>
+
+      <h3><span class="h3-dot"></span>Routing Logic</h3>
+      <p>
+        For each incoming message, the plugin evaluates all configured agents for that space. An agent receives the message if either:
+      </p>
+      <ul>
+        <li><strong><code>alwaysListen: true</code></strong> — always receives every message from the space</li>
+        <li><strong><code>mentionKeyword</code> match</strong> — the keyword appears anywhere in the message text (case-insensitive)</li>
+      </ul>
+      <p>Multiple agents can be dispatched for a single message. Each receives the full message and replies independently.</p>
+
+      <div class="routing-diagram">
+        <span class="msg">Message: "hey eng, can you review this PR?"</span><br>
+        &nbsp;&nbsp;<span class="arrow">↓</span><br>
+        &nbsp;&nbsp;evaluate agents for <code>spaces/ABC123example</code>:<br>
+        &nbsp;&nbsp;&nbsp;&nbsp;<span class="arrow">→</span> chief-of-staff &nbsp; <code>alwaysListen: true</code> &nbsp; <span class="match">✅ included</span><br>
+        &nbsp;&nbsp;&nbsp;&nbsp;<span class="arrow">→</span> engineer &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <code>mentionKeyword: "eng"</code> &nbsp; → "eng" found &nbsp; <span class="match">✅ included</span><br>
+        &nbsp;&nbsp;&nbsp;&nbsp;<span class="arrow">→</span> designer &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <code>mentionKeyword: "design"</code> → not found &nbsp; <span class="skip">⛔ skipped</span><br>
+        &nbsp;&nbsp;<span class="arrow">↓</span><br>
+        &nbsp;&nbsp;<span class="result">Dispatch to: [chief-of-staff, engineer]</span>
+      </div>
+
+      <h3><span class="h3-dot"></span>Routing Examples</h3>
+      <div class="routing-examples">
+        <div class="routing-ex">
+          <div class="ex-msg">"hello everyone, status update?"</div>
+          <div class="ex-arrow">→</div>
+          <div class="ex-result">chief-of-staff only (alwaysListen, no other keywords matched)</div>
+        </div>
+        <div class="routing-ex">
+          <div class="ex-msg">"design a new onboarding screen"</div>
+          <div class="ex-arrow">→</div>
+          <div class="ex-result">chief-of-staff + designer ("design" keyword matched)</div>
+        </div>
+        <div class="routing-ex">
+          <div class="ex-msg">"eng and design, please sync up on the spec"</div>
+          <div class="ex-arrow">→</div>
+          <div class="ex-result">chief-of-staff + engineer + designer (both keywords matched)</div>
+        </div>
+        <div class="routing-ex">
+          <div class="ex-msg">"can eng ship the fix by EOD?"</div>
+          <div class="ex-arrow">→</div>
+          <div class="ex-result">chief-of-staff + engineer ("eng" keyword matched)</div>
+        </div>
+      </div>
+
+      <div class="callout info">
+        <span class="callout-icon">💡</span>
+        <div class="callout-body">
+          <strong>Keyword matching is substring-based.</strong>
+          A message containing "engineering" will match the keyword "eng". Use more specific keywords to avoid unintended matches (e.g., use "design:" or "@design" as the keyword).
+        </div>
+      </div>
+    </section>
+
+    <!-- ─── SECTION 8: THREAD BEHAVIOR ─── -->
+    <section class="section" id="threads">
+      <div class="section-header">
+        <div class="section-num">8</div>
+        <h2>Thread Behavior</h2>
+      </div>
+      <p class="section-sub">Control how agents reply and how conversation context is scoped.</p>
+
+      <h3><span class="h3-dot"></span><code>replyInThread</code></h3>
+      <p>
+        When <code>replyInThread: true</code>, the plugin always sends replies as thread replies to the original message — never to the top-level space. This keeps spaces clean and conversations organized.
+      </p>
+      <p>
+        When <code>false</code> (default), replies are sent to the space's main message window.
+      </p>
+
+      <h3><span class="h3-dot"></span><code>threadSessionIsolation</code></h3>
+      <p>
+        Controls how conversation context (session key) is scoped for multi-turn conversations. This determines what history an agent "remembers" within a space.
+      </p>
+
+      <div class="thread-compare">
+        <div class="thread-box">
+          <h4>threadSessionIsolation: false</h4>
+          <p style="font-size:.82rem; color: var(--text-muted); margin-bottom:.8rem;">All messages in the space share one session. Agents see full space history.</p>
+          <div class="thread-session">session: googlechatpubsub:spaces/ABC123</div>
+          <div class="thread-session">session: googlechatpubsub:spaces/ABC123</div>
+          <div class="thread-session">session: googlechatpubsub:spaces/ABC123</div>
+          <p style="font-size:.75rem; color: var(--text-dim); margin-top:.6rem;">Every message → same context window</p>
+        </div>
+        <div class="thread-box">
+          <h4 class="enabled">threadSessionIsolation: true ✓</h4>
+          <p style="font-size:.82rem; color: var(--text-muted); margin-bottom:.8rem;">Each thread has its own session. Agents only see that thread's history.</p>
+          <div class="thread-session isolated">session: googlechatpubsub:spaces/ABC123:thread-1</div>
+          <div class="thread-session isolated">session: googlechatpubsub:spaces/ABC123:thread-2</div>
+          <div class="thread-session isolated">session: googlechatpubsub:spaces/ABC123:thread-3</div>
+          <p style="font-size:.75rem; color: var(--text-dim); margin-top:.6rem;">Each thread → isolated context</p>
+        </div>
+      </div>
+
+      <div class="callout success">
+        <span class="callout-icon">✅</span>
+        <div class="callout-body">
+          <strong>Recommended: enable both.</strong>
+          <code>replyInThread: true</code> + <code>threadSessionIsolation: true</code> gives you clean threaded conversations with fully isolated context per topic — ideal for multi-agent team spaces.
+        </div>
+      </div>
+    </section>
+
+    <!-- ─── SECTION 9: TROUBLESHOOTING ─── -->
+    <section class="section" id="troubleshooting">
+      <div class="section-header">
+        <div class="section-num">9</div>
+        <h2>Troubleshooting</h2>
+      </div>
+      <p class="section-sub">Common issues and how to resolve them.</p>
+
+      <div class="trouble-list">
+
+        <div class="trouble-item">
+          <div class="trouble-header">
+            <span class="trouble-icon">🔑</span>
+            <span class="trouble-title">OAuth token expired or invalid</span>
+          </div>
+          <div class="trouble-body">
+            <p>The plugin auto-refreshes access tokens using the <code>refresh_token</code>. If you see 401 errors, the refresh token may have been revoked.</p>
+            <p><strong>Fix:</strong> Re-run the OAuth authorization flow (Section 5) and overwrite <code>gchat-tokens.json</code> with fresh tokens. This happens if a user revokes app access in Google Account settings, or if tokens haven't been used for 6 months.</p>
+          </div>
+        </div>
+
+        <div class="trouble-item">
+          <div class="trouble-header">
+            <span class="trouble-icon">⏳</span>
+            <span class="trouble-title">Subscription expired — messages not arriving</span>
+          </div>
+          <div class="trouble-body">
+            <p>Workspace Events subscriptions expire after 4 hours. The plugin renews them automatically, but renewal can fail if the gateway was offline.</p>
+            <p><strong>Fix:</strong> Restart the OpenClaw gateway. On startup, the plugin checks subscription state and creates a new one if needed. Look for <code>[googlechatpubsub] Creating subscription...</code> in logs.</p>
+          </div>
+        </div>
+
+        <div class="trouble-item">
+          <div class="trouble-header">
+            <span class="trouble-icon">⚠️</span>
+            <span class="trouble-title">Subscription creation fails with 403 or 404</span>
+          </div>
+          <div class="trouble-body">
+            <p>The OAuth user is not a member of the target Chat space. The Workspace Events API scopes subscriptions to the OAuth user's access — if they can't see the space, <code>subscriptions.create</code> will return a 403 or 404.</p>
+            <p><strong>Fix:</strong> Add the OAuth user account to the space (as a member or manager) and retry. Confirm the space ID in your <code>bindings</code> config matches the space the user was added to.</p>
+          </div>
+        </div>
+
+        <div class="trouble-item">
+          <div class="trouble-header">
+            <span class="trouble-icon">📭</span>
+            <span class="trouble-title">Messages not arriving in Pub/Sub</span>
+          </div>
+          <div class="trouble-body">
+            <p>Check two things in order:</p>
+            <p>1. <strong>IAM binding:</strong> Verify <code>chat-api-push@system.gserviceaccount.com</code> has <code>Pub/Sub Publisher</code> on your topic. This is the most common cause.</p>
+            <p>2. <strong>Subscription exists:</strong> Go to GCP → Pub/Sub → Subscriptions and verify your subscription is listed and the topic matches.</p>
+            <p>3. <strong>Bot is a space member:</strong> The account used for OAuth must be a member of the monitored space.</p>
+          </div>
+        </div>
+
+        <div class="trouble-item">
+          <div class="trouble-header">
+            <span class="trouble-icon">🔌</span>
+            <span class="trouble-title">Plugin not starting / not in plugins list</span>
+          </div>
+          <div class="trouble-body">
+            <p>Run <code>openclaw plugins list</code> and check if <code>googlechatpubsub</code> appears.</p>
+            <p><strong>Fix checklist:</strong></p>
+            <ul>
+              <li>Confirm <code>plugins.allow</code> in <code>openclaw.json</code> includes <code>"googlechatpubsub"</code></li>
+              <li>Confirm <code>~/.openclaw/extensions/googlechatpubsub/</code> contains both <code>index.ts</code> and <code>openclaw.plugin.json</code></li>
+              <li>Confirm <code>plugins.entries.googlechatpubsub.enabled</code> is <code>true</code></li>
+              <li>Check gateway logs for TypeScript compilation errors in the plugin</li>
+            </ul>
+          </div>
+        </div>
+
+        <div class="trouble-item">
+          <div class="trouble-header">
+            <span class="trouble-icon">🚫</span>
+            <span class="trouble-title">403 error when adding reactions</span>
+          </div>
+          <div class="trouble-body">
+            <p>The OAuth token is missing the <code>chat.messages.reactions.create</code> scope.</p>
+            <p><strong>Fix:</strong> Add the scope to the OAuth consent screen (GCP → APIs &amp; Services → OAuth consent screen → Scopes), then re-run the OAuth flow to get a new token with the updated scopes.</p>
+          </div>
+        </div>
+
+        <div class="trouble-item">
+          <div class="trouble-header">
+            <span class="trouble-icon">🤖</span>
+            <span class="trouble-title">Agent not responding to messages</span>
+          </div>
+          <div class="trouble-body">
+            <p>Verify root-level <code>bindings</code> in <code>openclaw.json</code> are configured correctly (Section 4). The <code>accountId</code> in <code>match</code> must exactly match the <code>agentId</code> in the plugin's <code>bindings[].agents[]</code> array.</p>
+            <p>Also confirm the <code>agentId</code> refers to a real, enabled agent in your <code>agents</code> config block.</p>
+          </div>
+        </div>
+
+      </div>
+    </section>
+
+    <!-- ─── SECTION 10: CONFIG REFERENCE ─── -->
+    <section class="section" id="config-ref">
+      <div class="section-header">
+        <div class="section-num">10</div>
+        <h2>Configuration Reference</h2>
+      </div>
+      <p class="section-sub">All available config options for the plugin block in <code>openclaw.json</code>.</p>
+
+      <h3><span class="h3-dot"></span>Top-Level Plugin Config</h3>
+      <div class="config-table-wrap">
+        <table>
+          <thead>
+            <tr><th>Key</th><th>Type</th><th>Default</th><th>Req?</th><th>Description</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td class="td-key">clientId</td>
+              <td class="td-type">string</td>
+              <td class="td-default">—</td>
+              <td><span class="badge-req">Required</span></td>
+              <td>OAuth 2.0 client ID from GCP Credentials</td>
+            </tr>
+            <tr>
+              <td class="td-key">clientSecret</td>
+              <td class="td-type">string</td>
+              <td class="td-default">—</td>
+              <td><span class="badge-req">Required</span></td>
+              <td>OAuth 2.0 client secret from GCP Credentials</td>
+            </tr>
+            <tr>
+              <td class="td-key">projectId</td>
+              <td class="td-type">string</td>
+              <td class="td-default">—</td>
+              <td><span class="badge-req">Required</span></td>
+              <td>GCP project ID (e.g. <code>my-project-123</code>)</td>
+            </tr>
+            <tr>
+              <td class="td-key">topicName</td>
+              <td class="td-type">string</td>
+              <td class="td-default">—</td>
+              <td><span class="badge-req">Required</span></td>
+              <td>Pub/Sub topic short name (e.g. <code>openclaw-gchat-events</code>). Full path is constructed automatically.</td>
+            </tr>
+            <tr>
+              <td class="td-key">subscriptionName</td>
+              <td class="td-type">string</td>
+              <td class="td-default">—</td>
+              <td><span class="badge-req">Required</span></td>
+              <td>Pub/Sub subscription short name (e.g. <code>openclaw-gchat-events-sub</code>)</td>
+            </tr>
+            <tr>
+              <td class="td-key">bindings</td>
+              <td class="td-type">array</td>
+              <td class="td-default">—</td>
+              <td><span class="badge-req">Required</span></td>
+              <td>Space-to-agent routing rules. See binding schema below.</td>
+            </tr>
+            <tr>
+              <td class="td-key">tokensFile</td>
+              <td class="td-type">string</td>
+              <td class="td-default">~/.openclaw/gchat-tokens.json</td>
+              <td><span class="badge-opt">Optional</span></td>
+              <td>Path to read/write OAuth tokens. Created on first token exchange.</td>
+            </tr>
+            <tr>
+              <td class="td-key">pollIntervalMs</td>
+              <td class="td-type">number</td>
+              <td class="td-default">2000</td>
+              <td><span class="badge-opt">Optional</span></td>
+              <td>How often to pull from Pub/Sub subscription, in milliseconds. Lower = lower latency, higher API usage.</td>
+            </tr>
+            <tr>
+              <td class="td-key">maxMessages</td>
+              <td class="td-type">number</td>
+              <td class="td-default">10</td>
+              <td><span class="badge-opt">Optional</span></td>
+              <td>Max messages to acknowledge per poll cycle. Increase for high-volume spaces.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3><span class="h3-dot"></span>Binding Object (<code>bindings[]</code>)</h3>
+      <div class="config-table-wrap">
+        <table>
+          <thead>
+            <tr><th>Key</th><th>Type</th><th>Default</th><th>Req?</th><th>Description</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td class="td-key">space</td>
+              <td class="td-type">string</td>
+              <td class="td-default">—</td>
+              <td><span class="badge-req">Required</span></td>
+              <td>Google Chat space name in <code>spaces/XXXXXXXXXXX</code> format</td>
+            </tr>
+            <tr>
+              <td class="td-key">agents</td>
+              <td class="td-type">array</td>
+              <td class="td-default">—</td>
+              <td><span class="badge-req">Required</span></td>
+              <td>List of agent routing rules for this space. See agent schema below.</td>
+            </tr>
+            <tr>
+              <td class="td-key">replyInThread</td>
+              <td class="td-type">boolean</td>
+              <td class="td-default">false</td>
+              <td><span class="badge-opt">Optional</span></td>
+              <td>When true, all replies are sent as thread replies to the triggering message.</td>
+            </tr>
+            <tr>
+              <td class="td-key">threadSessionIsolation</td>
+              <td class="td-type">boolean</td>
+              <td class="td-default">false</td>
+              <td><span class="badge-opt">Optional</span></td>
+              <td>When true, each thread gets its own session key — agents only see context from that thread.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3><span class="h3-dot"></span>Agent Routing Object (<code>bindings[].agents[]</code>)</h3>
+      <div class="config-table-wrap">
+        <table>
+          <thead>
+            <tr><th>Key</th><th>Type</th><th>Default</th><th>Req?</th><th>Description</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td class="td-key">agentId</td>
+              <td class="td-type">string</td>
+              <td class="td-default">—</td>
+              <td><span class="badge-req">Required</span></td>
+              <td>Must match an agent key in <code>openclaw.json</code> agents block and the <code>accountId</code> in root bindings.</td>
+            </tr>
+            <tr>
+              <td class="td-key">alwaysListen</td>
+              <td class="td-type">boolean</td>
+              <td class="td-default">false</td>
+              <td><span class="badge-opt">Optional</span></td>
+              <td>When true, agent receives every message from this space regardless of content.</td>
+            </tr>
+            <tr>
+              <td class="td-key">mentionKeyword</td>
+              <td class="td-type">string</td>
+              <td class="td-default">—</td>
+              <td><span class="badge-opt">Optional</span></td>
+              <td>Case-insensitive substring match. Agent is dispatched when this keyword appears in the message text.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="callout info">
+        <span class="callout-icon">ℹ️</span>
+        <div class="callout-body">
+          <strong>At least one of <code>alwaysListen</code> or <code>mentionKeyword</code> should be set per agent.</strong>
+          An agent with neither will never receive messages.
+        </div>
+      </div>
+    </section>
+
+  </main>
+</div>
+
+<!-- FOOTER -->
+<footer class="footer">
+  <div class="footer-links">
+    <a href="../gchat-pubsub-research/">📋 Research Notes</a>
+    <a href="https://developers.google.com/workspace/events" target="_blank">Workspace Events API ↗</a>
+    <a href="https://cloud.google.com/pubsub/docs" target="_blank">Cloud Pub/Sub Docs ↗</a>
+    <a href="https://developers.google.com/workspace/chat" target="_blank">Google Chat API ↗</a>
+  </div>
+  <div class="footer-right">
+    <span>v0.1.0-alpha</span>
+    <span class="built-badge">⚡ Built with OpenClaw</span>
+  </div>
+</footer>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-bash.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-json.min.js"></script>
+<script>
+  // ── Copy buttons ──────────────────────────────────
+  function copyCode(btn) {
+    const pre = btn.closest('.code-block').querySelector('pre');
+    const text = pre.innerText || pre.textContent;
+    navigator.clipboard.writeText(text).then(() => {
+      btn.textContent = '✓ Copied';
+      btn.classList.add('copied');
+      setTimeout(() => {
+        btn.innerHTML = '⎘ Copy';
+        btn.classList.remove('copied');
+      }, 2000);
+    }).catch(() => {
+      // fallback
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand('copy');
+      document.body.removeChild(ta);
+      btn.textContent = '✓ Copied';
+      btn.classList.add('copied');
+      setTimeout(() => { btn.innerHTML = '⎘ Copy'; btn.classList.remove('copied'); }, 2000);
+    });
+  }
+
+  // ── Active sidebar link on scroll ────────────────
+  const sections = document.querySelectorAll('.section');
+  const navLinks = document.querySelectorAll('.sidebar nav a');
+  const headerH = parseInt(getComputedStyle(document.documentElement).getPropertyValue('--header-h'));
+
+  function updateActiveLink() {
+    let current = '';
+    sections.forEach(sec => {
+      const top = sec.getBoundingClientRect().top;
+      if (top <= headerH + 40) current = sec.id;
+    });
+    navLinks.forEach(link => {
+      link.classList.remove('active');
+      if (link.getAttribute('href') === '#' + current) link.classList.add('active');
+    });
+  }
+  window.addEventListener('scroll', updateActiveLink, { passive: true });
+  updateActiveLink();
+
+  // ── Smooth scroll ─────────────────────────────────
+  document.querySelectorAll('a[href^="#"]').forEach(a => {
+    a.addEventListener('click', e => {
+      const id = a.getAttribute('href').slice(1);
+      const el = document.getElementById(id);
+      if (el) {
+        e.preventDefault();
+        el.scrollIntoView({ behavior: 'smooth' });
+      }
+    });
+  });
+</script>
+</body>
+</html>

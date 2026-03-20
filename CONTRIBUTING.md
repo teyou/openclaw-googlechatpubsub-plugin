@@ -101,7 +101,7 @@ Open an issue with:
 
 ## Code of Conduct
 
-Be respectful. We're building tools for healthcare teams — the bar for professionalism is high.
+Be respectful and professional.
 
 ## License
 

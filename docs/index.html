@@ -908,7 +908,7 @@
             <p><strong>Add IAM binding:</strong> After creating the topic, go to its <strong>Permissions</strong> tab and add:</p>
             <ul>
               <li><strong>Principal:</strong> <code>chat-api-push@system.gserviceaccount.com</code></li>
-              <li><strong>Role:</strong> <code>Pub/Sub Editor</code></li>
+              <li><strong>Role:</strong> <code>Pub/Sub Publisher</code></li>
             </ul>
             <div class="callout warn">
               <span class="callout-icon">⚠️</span>
@@ -921,7 +921,7 @@
               <div class="icon">🖼️</div>
               <div class="info">
                 <strong>Pub/Sub → Topics → [your-topic] → Permissions → Add Principal</strong>
-                Enter <code>chat-api-push@system.gserviceaccount.com</code>, select role "Pub/Sub Editor", save.
+                Enter <code>chat-api-push@system.gserviceaccount.com</code>, select role "Pub/Sub Publisher", save.
               </div>
             </div>
           </div>
@@ -1358,7 +1358,7 @@ openclaw plugins list</code></pre>
             <tr>
               <td class="td-key">chat-api-push@system.gserviceaccount.com</td>
               <td>Pub/Sub Topic</td>
-              <td><code>roles/pubsub.editor</code></td>
+              <td><code>roles/pubsub.publisher</code></td>
               <td>Allows Chat to push events to your topic</td>
             </tr>
             <tr>
@@ -1533,7 +1533,7 @@ openclaw plugins list</code></pre>
           </div>
           <div class="trouble-body">
             <p>Check two things in order:</p>
-            <p>1. <strong>IAM binding:</strong> Verify <code>chat-api-push@system.gserviceaccount.com</code> has <code>Pub/Sub Editor</code> on your topic. This is the most common cause.</p>
+            <p>1. <strong>IAM binding:</strong> Verify <code>chat-api-push@system.gserviceaccount.com</code> has <code>Pub/Sub Publisher</code> on your topic. This is the most common cause.</p>
             <p>2. <strong>Subscription exists:</strong> Go to GCP → Pub/Sub → Subscriptions and verify your subscription is listed and the topic matches.</p>
             <p>3. <strong>Bot is a space member:</strong> The account used for OAuth must be a member of the monitored space.</p>
           </div>

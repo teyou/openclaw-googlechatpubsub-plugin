@@ -750,6 +750,23 @@ async function processMessageInPipeline(params: {
       onModelSelected,
     },
   });
+
+  // Clean up orphaned typing indicator (e.g. agent replied NO_REPLY / silent skip)
+  // If deliver was called, typingMessageName was set to undefined inside deliver.
+  // If we get here and it's still set, no delivery happened — delete the stale message.
+  if (typingMessageName) {
+    logger.info(`🧹 Cleaning up orphaned typing message: ${typingMessageName}`);
+    try {
+      const cleanupToken = await getBotToken();
+      await httpJson(`https://chat.googleapis.com/v1/${typingMessageName}`, {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${cleanupToken}` },
+      });
+      logger.info(`✅ Orphaned typing message deleted`);
+    } catch (err: any) {
+      logger.error(`Failed to delete orphaned typing message: ${err.message}`);
+    }
+  }
 }
 
 // ── Chat API reaction ───────────────────────────────────────────────────────

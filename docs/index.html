@@ -707,7 +707,7 @@
       <h1><code>googlechatpubsub</code><br>Setup &amp; Installation Guide</h1>
       <p>Connect OpenClaw agents to Google Chat spaces via Pub/Sub — no @mention required. Full multi-agent routing, thread isolation, and auto-renewing subscriptions.</p>
       <div class="meta">
-        <span class="meta-item">📌 Version <strong>0.1.0-alpha</strong></span>
+        <span class="meta-item">📌 Version <strong>0.2.0-alpha</strong></span>
         <span class="meta-item">🔧 Plugin type <strong>channel</strong></span>
         <span class="meta-item">☁️ Requires <strong>GCP + Workspace</strong></span>
       </div>
@@ -1067,58 +1067,63 @@ git clone https://github.com/teyou/openclaw-googlechatpubsub-plugin.git \
         <div class="section-num">4</div>
         <h2>Configuration</h2>
       </div>
-      <p class="section-sub">Add the plugin block and agent bindings to your <code>openclaw.json</code>.</p>
+      <p class="section-sub">Add the channel config and agent bindings to your <code>openclaw.json</code>.</p>
 
-      <h3><span class="h3-dot"></span>Plugin Block</h3>
-      <p>Add the following to your <code>openclaw.json</code>. If a <code>plugins</code> key already exists, merge carefully.</p>
+      <h3><span class="h3-dot"></span>Channel Config <span style="color:var(--green);font-size:0.75em;margin-left:0.5em;">v0.2.0+</span></h3>
+      <p>Add the following to your <code>openclaw.json</code>. Since v0.2.0 the plugin reads config from <code>channels.googlechatpubsub</code> (standard channel convention). The legacy <code>plugins.entries</code> path still works as a fallback.</p>
       <div class="code-block">
         <div class="code-block-header"><span class="code-lang">jsonc</span><button class="copy-btn" onclick="copyCode(this)">⎘ Copy</button></div>
         <pre><code class="language-json">{
   "plugins": {
-    "allow": ["googlechatpubsub"],
-    "entries": {
-      "googlechatpubsub": {
-        "enabled": true,
-        "config": {
-          "clientId":         "123456789-abc.apps.googleusercontent.com",
-          "clientSecret":     "GOCSPX-your-client-secret",
-          "projectId":        "my-gcp-project-id",
-          "topicName":        "openclaw-gchat-events",
-          "subscriptionName": "openclaw-gchat-events-sub",
-          "tokensFile":       "~/.openclaw/gchat-tokens.json",
-          "pollIntervalMs":   2000,
-          "maxMessages":      10,
-          "bindings": [
+    "allow": ["googlechatpubsub"]
+  },
+
+  "channels": {
+    "googlechatpubsub": {
+      "enabled": true,
+      "projectId":        "my-gcp-project-id",
+      "topicId":          "openclaw-gchat-events",
+      "subscriptionId":   "openclaw-gchat-events-sub",
+      "pollIntervalSeconds": 3,
+      "renewalBufferMinutes": 30,
+      "oauth": {
+        "clientId":     "123456789-abc.apps.googleusercontent.com",
+        "clientSecret": "GOCSPX-your-client-secret",
+        "tokensFile":   "~/.openclaw/gchat-tokens.json"
+      },
+      "bindings": [
+        {
+          "space": "spaces/ABC123example",
+          "replyInThread": true,
+          "threadSessionIsolation": true,
+          "agents": [
             {
-              "space": "spaces/ABC123example",
-              "replyInThread": true,
-              "threadSessionIsolation": true,
-              "agents": [
-                {
-                  "agentId": "chief-of-staff",
-                  "alwaysListen": true
-                },
-                {
-                  "agentId": "engineer",
-                  "mentionKeyword": "eng"
-                },
-                {
-                  "agentId": "designer",
-                  "mentionKeyword": "design"
-                }
-              ]
+              "agentId": "chief-of-staff",
+              "alwaysListen": true
+            },
+            {
+              "agentId": "engineer",
+              "mentionKeyword": "eng"
+            },
+            {
+              "agentId": "designer",
+              "mentionKeyword": "design"
             }
           ]
         }
-      }
+      ]
     }
   }
 }</code></pre>
       </div>
 
+      <div style="background:var(--yellow-dim);border:1px solid rgba(251,191,36,0.3);border-radius:8px;padding:0.75rem 1rem;margin:1rem 0;font-size:0.9rem;">
+        <strong>Migrating from v0.1.x?</strong> Move your config from <code>plugins.entries.googlechatpubsub.config.{...}</code> up to <code>channels.googlechatpubsub.{...}</code>. The old path still works as a fallback &mdash; no rush.
+      </div>
+
       <h3><span class="h3-dot"></span>Root-Level Bindings</h3>
       <p>
-        To route incoming Pub/Sub messages to the correct OpenClaw agent sessions, add a <code>bindings</code> array at the root of <code>openclaw.json</code>. Each binding maps an <code>accountId</code> (which matches the <code>agentId</code> in the plugin config) to a specific agent.
+        To route incoming Pub/Sub messages to the correct OpenClaw agent sessions, add a <code>bindings</code> array at the root of <code>openclaw.json</code>. Each binding maps an <code>accountId</code> (which matches the <code>agentId</code> in the channel config) to a specific agent.
       </p>
       <div class="code-block">
         <div class="code-block-header"><span class="code-lang">json</span><button class="copy-btn" onclick="copyCode(this)">⎘ Copy</button></div>
@@ -1550,7 +1555,7 @@ openclaw plugins list</code></pre>
             <ul>
               <li>Confirm <code>plugins.allow</code> in <code>openclaw.json</code> includes <code>"googlechatpubsub"</code></li>
               <li>Confirm <code>~/.openclaw/extensions/googlechatpubsub/</code> contains both <code>index.ts</code> and <code>openclaw.plugin.json</code></li>
-              <li>Confirm <code>plugins.entries.googlechatpubsub.enabled</code> is <code>true</code></li>
+              <li>Confirm <code>channels.googlechatpubsub.enabled</code> is <code>true</code></li>
               <li>Check gateway logs for TypeScript compilation errors in the plugin</li>
             </ul>
           </div>
@@ -1587,9 +1592,9 @@ openclaw plugins list</code></pre>
         <div class="section-num">10</div>
         <h2>Configuration Reference</h2>
       </div>
-      <p class="section-sub">All available config options for the plugin block in <code>openclaw.json</code>.</p>
+      <p class="section-sub">All available config options for <code>channels.googlechatpubsub</code> in <code>openclaw.json</code>.</p>
 
-      <h3><span class="h3-dot"></span>Top-Level Plugin Config</h3>
+      <h3><span class="h3-dot"></span>Channel Config</h3>
       <div class="config-table-wrap">
         <table>
           <thead>
@@ -1597,18 +1602,11 @@ openclaw plugins list</code></pre>
           </thead>
           <tbody>
             <tr>
-              <td class="td-key">clientId</td>
-              <td class="td-type">string</td>
-              <td class="td-default">—</td>
-              <td><span class="badge-req">Required</span></td>
-              <td>OAuth 2.0 client ID from GCP Credentials</td>
-            </tr>
-            <tr>
-              <td class="td-key">clientSecret</td>
-              <td class="td-type">string</td>
-              <td class="td-default">—</td>
-              <td><span class="badge-req">Required</span></td>
-              <td>OAuth 2.0 client secret from GCP Credentials</td>
+              <td class="td-key">enabled</td>
+              <td class="td-type">boolean</td>
+              <td class="td-default">true</td>
+              <td><span class="badge-opt">Optional</span></td>
+              <td>Enable or disable the plugin</td>
             </tr>
             <tr>
               <td class="td-key">projectId</td>
@@ -1618,14 +1616,14 @@ openclaw plugins list</code></pre>
               <td>GCP project ID (e.g. <code>my-project-123</code>)</td>
             </tr>
             <tr>
-              <td class="td-key">topicName</td>
+              <td class="td-key">topicId</td>
               <td class="td-type">string</td>
               <td class="td-default">—</td>
               <td><span class="badge-req">Required</span></td>
               <td>Pub/Sub topic short name (e.g. <code>openclaw-gchat-events</code>). Full path is constructed automatically.</td>
             </tr>
             <tr>
-              <td class="td-key">subscriptionName</td>
+              <td class="td-key">subscriptionId</td>
               <td class="td-type">string</td>
               <td class="td-default">—</td>
               <td><span class="badge-req">Required</span></td>
@@ -1639,25 +1637,53 @@ openclaw plugins list</code></pre>
               <td>Space-to-agent routing rules. See binding schema below.</td>
             </tr>
             <tr>
-              <td class="td-key">tokensFile</td>
+              <td class="td-key">oauth.clientId</td>
               <td class="td-type">string</td>
-              <td class="td-default">~/.openclaw/gchat-tokens.json</td>
-              <td><span class="badge-opt">Optional</span></td>
-              <td>Path to read/write OAuth tokens. Created on first token exchange.</td>
+              <td class="td-default">—</td>
+              <td><span class="badge-req">Required</span></td>
+              <td>OAuth 2.0 client ID from GCP Credentials</td>
             </tr>
             <tr>
-              <td class="td-key">pollIntervalMs</td>
-              <td class="td-type">number</td>
-              <td class="td-default">2000</td>
-              <td><span class="badge-opt">Optional</span></td>
-              <td>How often to pull from Pub/Sub subscription, in milliseconds. Lower = lower latency, higher API usage.</td>
+              <td class="td-key">oauth.clientSecret</td>
+              <td class="td-type">string</td>
+              <td class="td-default">—</td>
+              <td><span class="badge-req">Required</span></td>
+              <td>OAuth 2.0 client secret from GCP Credentials</td>
             </tr>
             <tr>
-              <td class="td-key">maxMessages</td>
+              <td class="td-key">oauth.tokensFile</td>
+              <td class="td-type">string</td>
+              <td class="td-default">—</td>
+              <td><span class="badge-req">Required</span></td>
+              <td>Path to read/write OAuth tokens JSON file</td>
+            </tr>
+            <tr>
+              <td class="td-key">pollIntervalSeconds</td>
               <td class="td-type">number</td>
-              <td class="td-default">10</td>
+              <td class="td-default">3</td>
               <td><span class="badge-opt">Optional</span></td>
-              <td>Max messages to acknowledge per poll cycle. Increase for high-volume spaces.</td>
+              <td>Seconds between Pub/Sub polls. Lower = lower latency, higher API usage.</td>
+            </tr>
+            <tr>
+              <td class="td-key">renewalBufferMinutes</td>
+              <td class="td-type">number</td>
+              <td class="td-default">30</td>
+              <td><span class="badge-opt">Optional</span></td>
+              <td>Minutes before subscription expiry to trigger auto-renewal.</td>
+            </tr>
+            <tr>
+              <td class="td-key">agentTimeoutSeconds</td>
+              <td class="td-type">number</td>
+              <td class="td-default">60</td>
+              <td><span class="badge-opt">Optional</span></td>
+              <td>Timeout for agent pipeline execution per message.</td>
+            </tr>
+            <tr>
+              <td class="td-key">serviceAccountFile</td>
+              <td class="td-type">string</td>
+              <td class="td-default"><em>from googlechat</em></td>
+              <td><span class="badge-opt">Optional</span></td>
+              <td>Path to bot service account JSON. Falls back to <code>channels.googlechat.serviceAccountFile</code>.</td>
             </tr>
           </tbody>
         </table>
@@ -1714,7 +1740,7 @@ openclaw plugins list</code></pre>
               <td class="td-type">string</td>
               <td class="td-default">—</td>
               <td><span class="badge-req">Required</span></td>
-              <td>Must match an agent key in <code>openclaw.json</code> agents block and the <code>accountId</code> in root bindings.</td>
+              <td>Must match the <code>accountId</code> in root-level bindings.</td>
             </tr>
             <tr>
               <td class="td-key">alwaysListen</td>
@@ -1755,7 +1781,7 @@ openclaw plugins list</code></pre>
     <a href="https://developers.google.com/workspace/chat" target="_blank">Google Chat API ↗</a>
   </div>
   <div class="footer-right">
-    <span>v0.1.0-alpha</span>
+    <span>v0.2.0-alpha</span>
     <span class="built-badge">⚡ Built with OpenClaw</span>
   </div>
 </footer>

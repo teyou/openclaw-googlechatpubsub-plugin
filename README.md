@@ -6,7 +6,7 @@ Listen to Google Chat spaces via **Workspace Events API + Cloud Pub/Sub** — no
 
 Messages arrive through Pub/Sub, get routed to one or more agents by keyword or always-listen rules, processed through the OpenClaw pipeline, and replied via the Google Chat API. Thread-first replies and per-thread session isolation are supported.
 
-> **Status:** Alpha (v0.1.0). Works in production but APIs may change.
+> **Status:** Alpha (v0.2.0). Works in production but APIs may change.
 
 ## How It Works
 
@@ -141,37 +141,37 @@ Add to your `openclaw.json`:
 
 ```jsonc
 {
-  // Allow the plugin to load
+  // Register the plugin
   "plugins": {
-    "allow": ["googlechatpubsub"],
-    "entries": {
-      "googlechatpubsub": {
-        "enabled": true,
-        "config": {
-          "projectId": "your-gcp-project",
-          "topicId": "openclaw-chat-events",
-          "subscriptionId": "openclaw-chat-events-sub",
-          "pollIntervalSeconds": 3,
-          "renewalBufferMinutes": 30,
-          "oauth": {
-            "clientId": "YOUR_OAUTH_CLIENT_ID",
-            "clientSecret": "YOUR_OAUTH_CLIENT_SECRET",
-            "tokensFile": "/home/you/gchat-tokens.json"
-          },
-          "bindings": [
-            {
-              "space": "spaces/ABC123example",
-              "replyInThread": true,
-              "threadSessionIsolation": true,
-              "agents": [
-                { "agentId": "chief-of-staff", "alwaysListen": true },
-                { "agentId": "engineer", "mentionKeyword": "eng" },
-                { "agentId": "designer", "mentionKeyword": "design" }
-              ]
-            }
+    "allow": ["googlechatpubsub"]
+  },
+
+  // Channel config (standard convention since v0.2.0)
+  "channels": {
+    "googlechatpubsub": {
+      "enabled": true,
+      "projectId": "your-gcp-project",
+      "topicId": "openclaw-chat-events",
+      "subscriptionId": "openclaw-chat-events-sub",
+      "pollIntervalSeconds": 3,
+      "renewalBufferMinutes": 30,
+      "oauth": {
+        "clientId": "YOUR_OAUTH_CLIENT_ID",
+        "clientSecret": "YOUR_OAUTH_CLIENT_SECRET",
+        "tokensFile": "/home/you/gchat-tokens.json"
+      },
+      "bindings": [
+        {
+          "space": "spaces/ABC123example",
+          "replyInThread": true,
+          "threadSessionIsolation": true,
+          "agents": [
+            { "agentId": "chief-of-staff", "alwaysListen": true },
+            { "agentId": "engineer", "mentionKeyword": "eng" },
+            { "agentId": "designer", "mentionKeyword": "design" }
           ]
         }
-      }
+      ]
     }
   },
 
@@ -183,6 +183,8 @@ Add to your `openclaw.json`:
   ]
 }
 ```
+
+> **Migrating from v0.1.x?** The old `plugins.entries.googlechatpubsub.config` path still works as a fallback. Move your config to `channels.googlechatpubsub` when convenient — no other changes needed.
 
 Restart the gateway:
 

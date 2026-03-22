@@ -1,5 +1,5 @@
 {
-  "name": "openclaw-googlechatpubsub",
+  "name": "@teyou/openclaw-googlechatpubsub",
   "version": "0.1.0",
   "description": "OpenClaw channel plugin — listen to Google Chat spaces via Workspace Events + Pub/Sub. No @mention required. Multi-agent routing with keyword and alwaysListen support.",
   "type": "module",

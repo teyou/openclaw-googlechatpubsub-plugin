@@ -49,6 +49,14 @@ Workspace Events API ──► Cloud Pub/Sub Topic
 
 ## Installation
 
+### Option A: Install from npm (recommended)
+
+```bash
+openclaw plugins install @teyou/openclaw-googlechatpubsub
+```
+
+### Option B: Manual install
+
 ```bash
 # Create the plugin directory
 mkdir -p ~/.openclaw/extensions/googlechatpubsub

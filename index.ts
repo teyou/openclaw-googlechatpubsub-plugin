@@ -929,8 +929,12 @@ export default defineChannelPluginEntry({
     config: {
       listAccountIds: () => ["default"],
       resolveAccount: (cfg: any) => {
+        // Primary: channels.googlechatpubsub (standard channel convention)
+        // Fallback: plugins.entries.googlechatpubsub.config (legacy ≤0.1.x)
         const pluginCfg =
-          cfg.plugins?.entries?.googlechatpubsub?.config || {};
+          cfg.channels?.googlechatpubsub ||
+          cfg.plugins?.entries?.googlechatpubsub?.config ||
+          {};
         return { accountId: "default", ...pluginCfg };
       },
     },
@@ -1042,7 +1046,10 @@ export default defineChannelPluginEntry({
         try {
         logger.info("[googlechatpubsub] start() called");
         const cfg = api.config;
+        // Primary: channels.googlechatpubsub (standard channel convention)
+        // Fallback: plugins.entries.googlechatpubsub.config (legacy ≤0.1.x)
         const pluginConfig: PubSubConfig =
+          cfg.channels?.googlechatpubsub ||
           cfg.plugins?.entries?.googlechatpubsub?.config;
 
         logger.info(`[googlechatpubsub] pluginConfig exists: ${!!pluginConfig}, enabled: ${pluginConfig?.enabled}`);

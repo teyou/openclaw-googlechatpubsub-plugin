@@ -12,6 +12,7 @@
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { createSign } from "node:crypto";
+import { defineChannelPluginEntry } from "openclaw/plugin-sdk/core";
 import {
   resolveInboundRouteEnvelopeBuilderWithRuntime,
   createReplyPrefixOptions,
@@ -908,209 +909,210 @@ async function pollOnce(): Promise<void> {
 
 // ── Plugin registration ─────────────────────────────────────────────────────
 
-export default function register(api: any) {
-  logger = api.logger ?? console;
-  pluginApi = api;
-
-  // Register as a channel plugin
-  api.registerChannel({
-    plugin: {
+export default defineChannelPluginEntry({
+  id: "googlechatpubsub",
+  name: "Google Chat (Pub/Sub)",
+  description: "Listen to Google Chat spaces via Workspace Events + Pub/Sub. No @mention required.",
+  plugin: {
+    id: "googlechatpubsub",
+    meta: {
       id: "googlechatpubsub",
-      meta: {
-        id: "googlechatpubsub",
-        label: "Google Chat (Pub/Sub)",
-        selectionLabel: "Google Chat Pub/Sub (no-mention listening)",
-        docsPath: "/channels/googlechatpubsub",
-        blurb:
-          "Listen to Google Chat spaces via Workspace Events + Pub/Sub. No @mention required.",
-        aliases: ["gchatpubsub", "gchat-pubsub"],
+      label: "Google Chat (Pub/Sub)",
+      selectionLabel: "Google Chat Pub/Sub (no-mention listening)",
+      docsPath: "/channels/googlechatpubsub",
+      blurb:
+        "Listen to Google Chat spaces via Workspace Events + Pub/Sub. No @mention required.",
+      aliases: ["gchatpubsub", "gchat-pubsub"],
+    },
+    capabilities: { chatTypes: ["group"], reactions: true },
+    listActions: () => ["send", "react", "reactions"] as any[],
+    config: {
+      listAccountIds: () => ["default"],
+      resolveAccount: (cfg: any) => {
+        const pluginCfg =
+          cfg.plugins?.entries?.googlechatpubsub?.config || {};
+        return { accountId: "default", ...pluginCfg };
       },
-      capabilities: { chatTypes: ["group"], reactions: true },
-      listActions: () => ["send", "react", "reactions"] as any[],
-      config: {
-        listAccountIds: () => ["default"],
-        resolveAccount: (cfg: any) => {
-          const pluginCfg =
-            cfg.plugins?.entries?.googlechatpubsub?.config || {};
-          return { accountId: "default", ...pluginCfg };
-        },
-      },
-      handleAction: async (ctx: any) => {
-        const { action, params } = ctx;
+    },
+    handleAction: async (ctx: any) => {
+      const { action, params } = ctx;
 
-        if (action === "react") {
-          const messageName = params.messageId || params.message_id || params.target;
-          const emoji = params.emoji || "👀";
-          if (!messageName) {
-            return { ok: false, error: "messageId (Chat message name) is required for react" };
+      if (action === "react") {
+        const messageName = params.messageId || params.message_id || params.target;
+        const emoji = params.emoji || "👀";
+        if (!messageName) {
+          return { ok: false, error: "messageId (Chat message name) is required for react" };
+        }
+        try {
+          const token = await getOAuthToken();
+          const url = `https://chat.googleapis.com/v1/${messageName}/reactions`;
+          const { status, data } = await httpJson(url, {
+            method: "POST",
+            headers: { Authorization: `Bearer ${token}` },
+            body: {
+              emoji: { unicode: emoji },
+            },
+          });
+          if (status >= 400) {
+            return { ok: false, error: `Chat API react failed (${status}): ${JSON.stringify(data)}` };
           }
-          try {
-            const token = await getOAuthToken();
-            const url = `https://chat.googleapis.com/v1/${messageName}/reactions`;
-            const { status, data } = await httpJson(url, {
+          return { ok: true, added: emoji };
+        } catch (e: any) {
+          return { ok: false, error: `React failed: ${e.message}` };
+        }
+      }
+
+      if (action === "reactions") {
+        const messageName = params.messageId || params.message_id || params.target;
+        if (!messageName) {
+          return { ok: false, error: "messageId (Chat message name) is required for reactions" };
+        }
+        try {
+          const token = await getOAuthToken();
+          const url = `https://chat.googleapis.com/v1/${messageName}/reactions`;
+          const { status, data } = await httpJson(url, {
+            method: "GET",
+            headers: { Authorization: `Bearer ${token}` },
+          });
+          return { ok: true, reactions: data.reactions || [] };
+        } catch (e: any) {
+          return { ok: false, error: `List reactions failed: ${e.message}` };
+        }
+      }
+
+      if (action === "send") {
+        const text = params.message || params.text;
+        const target = params.target;
+        if (!text || !target) {
+          return { ok: false, error: "message and target are required for send" };
+        }
+        try {
+          const token = await getBotToken();
+          const space = target;
+          const { status, data } = await httpJson(
+            `https://chat.googleapis.com/v1/${space}/messages`,
+            {
               method: "POST",
               headers: { Authorization: `Bearer ${token}` },
-              body: {
-                emoji: { unicode: emoji },
-              },
-            });
-            if (status >= 400) {
-              return { ok: false, error: `Chat API react failed (${status}): ${JSON.stringify(data)}` };
+              body: { text },
             }
-            return { ok: true, added: emoji };
-          } catch (e: any) {
-            return { ok: false, error: `React failed: ${e.message}` };
-          }
+          );
+          return { ok: status < 400, messageId: data?.name };
+        } catch (e: any) {
+          return { ok: false, error: `Send failed: ${e.message}` };
         }
+      }
 
-        if (action === "reactions") {
-          const messageName = params.messageId || params.message_id || params.target;
-          if (!messageName) {
-            return { ok: false, error: "messageId (Chat message name) is required for reactions" };
-          }
-          try {
-            const token = await getOAuthToken();
-            const url = `https://chat.googleapis.com/v1/${messageName}/reactions`;
-            const { status, data } = await httpJson(url, {
-              method: "GET",
+      return { ok: false, error: `Unsupported action: ${action}` };
+    },
+    outbound: {
+      deliveryMode: "direct",
+      sendText: async ({ text, target }: any) => {
+        try {
+          const token = await getBotToken();
+          const space = target || config?.bindings?.[0]?.space;
+          if (!space) return { ok: false };
+
+          const msgBody: any = { text };
+          const { status, data } = await httpJson(
+            `https://chat.googleapis.com/v1/${space}/messages`,
+            {
+              method: "POST",
               headers: { Authorization: `Bearer ${token}` },
-            });
-            return { ok: true, reactions: data.reactions || [] };
-          } catch (e: any) {
-            return { ok: false, error: `List reactions failed: ${e.message}` };
-          }
+              body: msgBody,
+            }
+          );
+          return { ok: status < 400 };
+        } catch (e: any) {
+          logger.error(`outbound sendText error: ${e.message}`);
+          return { ok: false };
         }
-
-        if (action === "send") {
-          const text = params.message || params.text;
-          const target = params.target;
-          if (!text || !target) {
-            return { ok: false, error: "message and target are required for send" };
-          }
-          try {
-            const token = await getBotToken();
-            const space = target;
-            const { status, data } = await httpJson(
-              `https://chat.googleapis.com/v1/${space}/messages`,
-              {
-                method: "POST",
-                headers: { Authorization: `Bearer ${token}` },
-                body: { text },
-              }
-            );
-            return { ok: status < 400, messageId: data?.name };
-          } catch (e: any) {
-            return { ok: false, error: `Send failed: ${e.message}` };
-          }
-        }
-
-        return { ok: false, error: `Unsupported action: ${action}` };
-      },
-      outbound: {
-        deliveryMode: "direct",
-        sendText: async ({ text, target }: any) => {
-          try {
-            const token = await getBotToken();
-            const space = target || config?.bindings?.[0]?.space;
-            if (!space) return { ok: false };
-
-            const msgBody: any = { text };
-            const { status, data } = await httpJson(
-              `https://chat.googleapis.com/v1/${space}/messages`,
-              {
-                method: "POST",
-                headers: { Authorization: `Bearer ${token}` },
-                body: msgBody,
-              }
-            );
-            return { ok: status < 400 };
-          } catch (e: any) {
-            logger.error(`outbound sendText error: ${e.message}`);
-            return { ok: false };
-          }
-        },
       },
     },
-  });
+  },
+  register(api) {
+    logger = api.logger ?? console;
+    pluginApi = api;
 
-  // Register background service
-  api.registerService({
-    id: "googlechatpubsub-listener",
+    // Register background service
+    api.registerService({
+      id: "googlechatpubsub-listener",
 
-    start: async () => {
-      try {
-      logger.info("[googlechatpubsub] start() called");
-      const cfg = api.config;
-      const pluginConfig: PubSubConfig =
-        cfg.plugins?.entries?.googlechatpubsub?.config;
+      start: async () => {
+        try {
+        logger.info("[googlechatpubsub] start() called");
+        const cfg = api.config;
+        const pluginConfig: PubSubConfig =
+          cfg.plugins?.entries?.googlechatpubsub?.config;
 
-      logger.info(`[googlechatpubsub] pluginConfig exists: ${!!pluginConfig}, enabled: ${pluginConfig?.enabled}`);
+        logger.info(`[googlechatpubsub] pluginConfig exists: ${!!pluginConfig}, enabled: ${pluginConfig?.enabled}`);
 
-      if (!pluginConfig?.enabled) {
-        logger.info("[googlechatpubsub] Disabled — skipping start");
-        return;
-      }
+        if (!pluginConfig?.enabled) {
+          logger.info("[googlechatpubsub] Disabled — skipping start");
+          return;
+        }
 
-      config = pluginConfig;
+        config = pluginConfig;
 
-      serviceAccountFile =
-        config.serviceAccountFile ||
-        cfg.channels?.googlechat?.serviceAccountFile ||
-        "";
+        serviceAccountFile =
+          config.serviceAccountFile ||
+          cfg.channels?.googlechat?.serviceAccountFile ||
+          "";
 
-      if (!serviceAccountFile) {
-        logger.error("[googlechatpubsub] No serviceAccountFile configured");
-        return;
-      }
+        if (!serviceAccountFile) {
+          logger.error("[googlechatpubsub] No serviceAccountFile configured");
+          return;
+        }
 
-      routingTable = buildRoutingTable(config.bindings);
-      targetSpaces = new Set(config.bindings.map((b) => b.space));
-      subscriptionState = loadSubState();
-      lastRenewalCheck = 0;
+        routingTable = buildRoutingTable(config.bindings);
+        targetSpaces = new Set(config.bindings.map((b) => b.space));
+        subscriptionState = loadSubState();
+        lastRenewalCheck = 0;
 
-      const pollMs = (config.pollIntervalSeconds ?? 3) * 1000;
+        const pollMs = (config.pollIntervalSeconds ?? 3) * 1000;
 
-      logger.info("═".repeat(60));
-      logger.info("[googlechatpubsub] Starting listener (v3 — in-process pipeline)");
-      logger.info(`  Project     : ${config.projectId}`);
-      logger.info(`  Topic       : ${config.topicId}`);
-      logger.info(`  Subscription: ${config.subscriptionId}`);
-      logger.info(`  Poll        : ${pollMs}ms`);
-      for (const space of targetSpaces) {
-        const entry = routingTable.get(space)!;
-        const kws = [...entry.keywordAgents.keys()];
-        const als = entry.alwaysListen.map((a) => a.agentId);
-        logger.info(`  ├─ ${space}`);
-        logger.info(`  │  keywords: ${JSON.stringify(kws)}`);
-        logger.info(`  │  alwaysListen: ${JSON.stringify(als)}`);
-        logger.info(`  │  replyInThread: ${entry.replyInThread}`);
-        logger.info(`  │  threadSessionIsolation: ${entry.threadSessionIsolation}`);
-      }
-      logger.info("═".repeat(60));
+        logger.info("═".repeat(60));
+        logger.info("[googlechatpubsub] Starting listener (v3 — in-process pipeline)");
+        logger.info(`  Project     : ${config.projectId}`);
+        logger.info(`  Topic       : ${config.topicId}`);
+        logger.info(`  Subscription: ${config.subscriptionId}`);
+        logger.info(`  Poll        : ${pollMs}ms`);
+        for (const space of targetSpaces) {
+          const entry = routingTable.get(space)!;
+          const kws = [...entry.keywordAgents.keys()];
+          const als = entry.alwaysListen.map((a) => a.agentId);
+          logger.info(`  ├─ ${space}`);
+          logger.info(`  │  keywords: ${JSON.stringify(kws)}`);
+          logger.info(`  │  alwaysListen: ${JSON.stringify(als)}`);
+          logger.info(`  │  replyInThread: ${entry.replyInThread}`);
+          logger.info(`  │  threadSessionIsolation: ${entry.threadSessionIsolation}`);
+        }
+        logger.info("═".repeat(60));
 
-      // Initial token + subscription check
-      try {
-        await getOAuthToken();
-        await getBotToken();
-        await checkAndRenewAll();
-        lastRenewalCheck = Date.now();
-      } catch (e: any) {
-        logger.error(`[googlechatpubsub] Init failed: ${e.message}`);
-      }
+        // Initial token + subscription check
+        try {
+          await getOAuthToken();
+          await getBotToken();
+          await checkAndRenewAll();
+          lastRenewalCheck = Date.now();
+        } catch (e: any) {
+          logger.error(`[googlechatpubsub] Init failed: ${e.message}`);
+        }
 
-      pollTimer = setInterval(() => pollOnce(), pollMs);
-      logger.info("[googlechatpubsub] Poll loop started");
-      } catch (startErr: any) {
-        logger.error(`[googlechatpubsub] start() CRASHED: ${startErr.stack || startErr.message}`);
-      }
-    },
+        pollTimer = setInterval(() => pollOnce(), pollMs);
+        logger.info("[googlechatpubsub] Poll loop started");
+        } catch (startErr: any) {
+          logger.error(`[googlechatpubsub] start() CRASHED: ${startErr.stack || startErr.message}`);
+        }
+      },
 
-    stop: () => {
-      if (pollTimer) {
-        clearInterval(pollTimer);
-        pollTimer = null;
-      }
-      logger.info("[googlechatpubsub] Stopped");
-    },
-  });
-}
+      stop: () => {
+        if (pollTimer) {
+          clearInterval(pollTimer);
+          pollTimer = null;
+        }
+        logger.info("[googlechatpubsub] Stopped");
+      },
+    });
+  },
+});

@@ -12,7 +12,6 @@
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { createSign } from "node:crypto";
-import { defineChannelPluginEntry } from "openclaw/plugin-sdk/core";
 import {
   resolveInboundRouteEnvelopeBuilderWithRuntime,
   createReplyPrefixOptions,
@@ -909,11 +908,11 @@ async function pollOnce(): Promise<void> {
 
 // ── Plugin registration ─────────────────────────────────────────────────────
 
-export default defineChannelPluginEntry({
-  id: "googlechatpubsub",
-  name: "Google Chat (Pub/Sub)",
-  description: "Listen to Google Chat spaces via Workspace Events + Pub/Sub. No @mention required.",
-  plugin: {
+export default function register(api: any) {
+  logger = api.logger ?? console;
+  pluginApi = api;
+
+  api.registerChannel({
     id: "googlechatpubsub",
     meta: {
       id: "googlechatpubsub",
@@ -1033,13 +1032,10 @@ export default defineChannelPluginEntry({
         }
       },
     },
-  },
-  register(api) {
-    logger = api.logger ?? console;
-    pluginApi = api;
+  });
 
-    // Register background service
-    api.registerService({
+  // Register background service
+  api.registerService({
       id: "googlechatpubsub-listener",
 
       start: async () => {
@@ -1121,5 +1117,4 @@ export default defineChannelPluginEntry({
         logger.info("[googlechatpubsub] Stopped");
       },
     });
-  },
-});
+}

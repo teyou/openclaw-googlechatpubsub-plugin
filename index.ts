@@ -478,11 +478,12 @@ async function downloadAttachments(
   const results: DownloadedAttachment[] = [];
 
   for (const att of attachments) {
-    // att.name = "spaces/.../messages/.../attachments/..." — the correct API path
-    // att.attachmentDataRef.resourceName = base64 protobuf blob — NOT a URL segment
-    const attachmentPath = att.name as string | undefined;
+    // media.download uses attachmentDataRef.resourceName (base64 resource token)
+    // att.name is for metadata GET only — returns 404 on media endpoint
+    const resourceName = att.attachmentDataRef?.resourceName as string | undefined;
+    const attachmentPath = resourceName || (att.name as string | undefined);
     if (!attachmentPath) {
-      logger.warn(`[attachment] No att.name — skipping: ${JSON.stringify(att).slice(0, 200)}`);
+      logger.warn(`[attachment] No resourceName or att.name — skipping: ${JSON.stringify(att).slice(0, 200)}`);
       continue;
     }
 
@@ -512,9 +513,9 @@ async function downloadAttachments(
     const localPath = join(mediaDir, filename);
 
     try {
-      // Chat API: GET /v1/{attachment.name}/media?alt=media
-      // att.name = "spaces/.../messages/.../attachments/..."
-      const downloadUrl = `https://chat.googleapis.com/v1/${attachmentPath}/media?alt=media`;
+      // Chat API media download: GET /v1/media/{resourceName}?alt=media
+      // resourceName from attachmentDataRef is the correct token for media download
+      const downloadUrl = `https://chat.googleapis.com/v1/media/${attachmentPath}?alt=media`;
       logger.info(`[attachment] Downloading ${attachmentPath} → ${filename}`);
 
       const controller = new AbortController();

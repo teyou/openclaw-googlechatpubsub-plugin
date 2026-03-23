@@ -9,9 +9,9 @@
  * No @mention required. Messages arrive via Pub/Sub, not the Chat webhook.
  */
 
-import { readFileSync, writeFileSync, existsSync } from "node:fs";
-import { resolve } from "node:path";
-import { createSign } from "node:crypto";
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
+import { resolve, join, extname } from "node:path";
+import { createSign, randomUUID } from "node:crypto";
 import {
   resolveInboundRouteEnvelopeBuilderWithRuntime,
   createReplyPrefixOptions,
@@ -451,6 +451,99 @@ async function checkAndRenewAll(): Promise<void> {
   }
 }
 
+// ── Attachment downloader ────────────────────────────────────────────────────
+
+interface DownloadedAttachment {
+  localPath: string;
+  mimeType: string;
+  filename: string;
+}
+
+/**
+ * Download Google Chat attachments via the Chat API media.download endpoint.
+ * Files are saved to ~/.openclaw/media/inbound/ so OpenClaw picks them up as MediaUrls.
+ */
+async function downloadAttachments(
+  attachments: any[],
+  botToken: string
+): Promise<DownloadedAttachment[]> {
+  if (!attachments || attachments.length === 0) return [];
+
+  const stateDir = process.env.OPENCLAW_DIR || `${process.env.HOME}/.openclaw`;
+  const mediaDir = join(stateDir, "media", "inbound");
+  try {
+    mkdirSync(mediaDir, { recursive: true });
+  } catch {}
+
+  const results: DownloadedAttachment[] = [];
+
+  for (const att of attachments) {
+    const resourceName = att.attachmentDataRef?.resourceName;
+    if (!resourceName) {
+      logger.warn(`[attachment] No resourceName — skipping: ${JSON.stringify(att).slice(0, 200)}`);
+      continue;
+    }
+
+    const mimeType: string = att.contentType || "application/octet-stream";
+    const originalName: string = att.name || resourceName.split("/").pop() || "attachment";
+
+    // Derive extension from mimeType or original name
+    let ext = extname(originalName);
+    if (!ext) {
+      const mimeToExt: Record<string, string> = {
+        "image/jpeg": ".jpg",
+        "image/png": ".png",
+        "image/gif": ".gif",
+        "image/webp": ".webp",
+        "application/pdf": ".pdf",
+        "text/plain": ".txt",
+        "text/csv": ".csv",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": ".xlsx",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
+      };
+      ext = mimeToExt[mimeType] || ".bin";
+    }
+
+    const filename = `${randomUUID()}${ext}`;
+    const localPath = join(mediaDir, filename);
+
+    try {
+      // Chat API media download: GET /v1/media/{resourceName}?alt=media
+      const downloadUrl = `https://chat.googleapis.com/v1/media/${resourceName}?alt=media`;
+      logger.info(`[attachment] Downloading ${resourceName} → ${filename}`);
+
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 30_000);
+      let resp: Response;
+      try {
+        resp = await fetch(downloadUrl, {
+          method: "GET",
+          headers: { Authorization: `Bearer ${botToken}` },
+          signal: controller.signal,
+        });
+      } finally {
+        clearTimeout(timer);
+      }
+
+      if (!resp.ok) {
+        const errText = await resp.text().catch(() => "");
+        logger.warn(`[attachment] Download failed (${resp.status}): ${errText.slice(0, 200)}`);
+        continue;
+      }
+
+      const buffer = Buffer.from(await resp.arrayBuffer());
+      const { writeFileSync: wfs } = await import("node:fs");
+      wfs(localPath, buffer);
+      logger.info(`[attachment] Saved ${buffer.length} bytes → ${localPath}`);
+      results.push({ localPath, mimeType, filename });
+    } catch (err: any) {
+      logger.error(`[attachment] Download error for ${resourceName}: ${err.message}`);
+    }
+  }
+
+  return results;
+}
+
 // ── In-process message pipeline ─────────────────────────────────────────────
 
 async function processMessageInPipeline(params: {
@@ -465,6 +558,7 @@ async function processMessageInPipeline(params: {
   eventTime?: string;
   replyInThread: boolean;
   threadSessionIsolation: boolean;
+  attachmentPaths?: string[];
 }): Promise<void> {
   const {
     agentId,
@@ -478,6 +572,7 @@ async function processMessageInPipeline(params: {
     eventTime,
     replyInThread,
     threadSessionIsolation,
+    attachmentPaths = [],
   } = params;
 
   const api = pluginApi;
@@ -524,6 +619,8 @@ async function processMessageInPipeline(params: {
   });
 
   // 2) Build inbound context payload (same structure as stock googlechat)
+  // Build file:// URLs for downloaded attachments so OpenClaw's MediaUrls pipeline picks them up
+  const mediaUrls = attachmentPaths.map((p) => `file://${p}`);
   const ctxPayload = runtime.channel.reply.finalizeInboundContext({
     Body: body,
     BodyForAgent: text,
@@ -548,6 +645,7 @@ async function processMessageInPipeline(params: {
     GroupSpace: spaceDisplayName || undefined,
     OriginatingChannel: "googlechatpubsub",
     OriginatingTo: `googlechatpubsub:${space}`,
+    ...(mediaUrls.length > 0 && { MediaUrls: mediaUrls }),
   });
 
   // 3) Record session meta — makes session visible in /session
@@ -842,12 +940,20 @@ async function pollOnce(): Promise<void> {
       if (!targetSpaces.has(space)) continue;
 
       const text = (chatMsg.text || "").trim();
-      if (!text) continue;
+      const rawAttachments: any[] = chatMsg.attachments || [];
+      // Require either text or attachments — skip empty messages
+      if (!text && rawAttachments.length === 0) continue;
 
       const displayName = sender.displayName || sender.name || "?";
-      logger.info(`📩 [${space}] ${displayName}: ${text.slice(0, 120)}`);
+      logger.info(`📩 [${space}] ${displayName}: ${text.slice(0, 120)}${rawAttachments.length ? ` [${rawAttachments.length} attachment(s)]` : ""}`);
 
-      const matched = routeMessage(text, space);
+      // For attachment-only messages with no text, use alwaysListen agents only
+      const matched = text
+        ? routeMessage(text, space)
+        : (() => {
+            const entry = routingTable.get(space);
+            return entry ? [...entry.alwaysListen] : [];
+          })();
 
       if (!matched.length) {
         if (msgName) processedMsgIds.add(msgName);
@@ -863,6 +969,21 @@ async function pollOnce(): Promise<void> {
       let pendingReactionName: string | undefined;
       if (msgName) {
         pendingReactionName = await sendReaction(oauthToken, msgName).catch(() => undefined);
+      }
+
+      // Download attachments (if any) before dispatching to agents
+      let downloadedPaths: string[] = [];
+      if (rawAttachments.length > 0) {
+        try {
+          const botToken = await getBotToken();
+          const downloaded = await downloadAttachments(rawAttachments, botToken);
+          downloadedPaths = downloaded.map((d) => d.localPath);
+          if (downloadedPaths.length > 0) {
+            logger.info(`📎 Downloaded ${downloadedPaths.length}/${rawAttachments.length} attachment(s)`);
+          }
+        } catch (err: any) {
+          logger.error(`Attachment download error: ${err.message}`);
+        }
       }
 
       // Process each matched agent through the in-process pipeline
@@ -884,6 +1005,7 @@ async function pollOnce(): Promise<void> {
             eventTime: data.eventTime || chatMsg.createTime,
             replyInThread: spaceReplyInThread,
             threadSessionIsolation: spaceThreadIsolation,
+            attachmentPaths: downloadedPaths,
           });
           logger.info(`✅ [${agent.agentId}] Pipeline complete for ${space}`);
         } catch (err: any) {

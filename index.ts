@@ -465,7 +465,7 @@ interface DownloadedAttachment {
  */
 async function downloadAttachments(
   attachments: any[],
-  botToken: string
+  oauthToken: string
 ): Promise<DownloadedAttachment[]> {
   if (!attachments || attachments.length === 0) return [];
 
@@ -524,7 +524,7 @@ async function downloadAttachments(
       try {
         resp = await fetch(downloadUrl, {
           method: "GET",
-          headers: { Authorization: `Bearer ${botToken}` },
+          headers: { Authorization: `Bearer ${oauthToken}` },
           signal: controller.signal,
         });
       } finally {
@@ -982,8 +982,8 @@ async function pollOnce(): Promise<void> {
       let downloadedPaths: string[] = [];
       if (rawAttachments.length > 0) {
         try {
-          const botToken = await getBotToken();
-          const downloaded = await downloadAttachments(rawAttachments, botToken);
+          // media.download requires OAuth token (service account JWT returns 403)
+          const downloaded = await downloadAttachments(rawAttachments, oauthToken);
           downloadedPaths = downloaded.map((d) => d.localPath);
           if (downloadedPaths.length > 0) {
             logger.info(`📎 Downloaded ${downloadedPaths.length}/${rawAttachments.length} attachment(s)`);

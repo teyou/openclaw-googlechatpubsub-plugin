@@ -625,8 +625,8 @@ async function processMessageInPipeline(params: {
   });
 
   // 2) Build inbound context payload (same structure as stock googlechat)
-  // Build file:// URLs for downloaded attachments so OpenClaw's MediaUrls pipeline picks them up
-  const mediaUrls = attachmentPaths.map((p) => `file://${p}`);
+  // Use MediaPaths (not MediaUrls) for local files — normalizeAttachments sets path: void 0
+  // when only MediaUrls is provided, treating them as remote URLs to fetch instead of local paths.
   const ctxPayload = runtime.channel.reply.finalizeInboundContext({
     Body: body,
     BodyForAgent: text,
@@ -651,7 +651,10 @@ async function processMessageInPipeline(params: {
     GroupSpace: spaceDisplayName || undefined,
     OriginatingChannel: "googlechatpubsub",
     OriginatingTo: `googlechatpubsub:${space}`,
-    ...(mediaUrls.length > 0 && { MediaUrls: mediaUrls }),
+    ...(attachmentPaths.length > 0 && {
+      MediaPaths: attachmentPaths,          // local file paths → sets path: value in normalizeAttachments
+      MediaUrls: attachmentPaths,           // also set for compat/dedup logic
+    }),
   });
 
   // 3) Record session meta — makes session visible in /session

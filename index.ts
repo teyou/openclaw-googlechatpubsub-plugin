@@ -478,16 +478,19 @@ async function downloadAttachments(
   const results: DownloadedAttachment[] = [];
 
   for (const att of attachments) {
-    const resourceName = att.attachmentDataRef?.resourceName;
-    if (!resourceName) {
-      logger.warn(`[attachment] No resourceName — skipping: ${JSON.stringify(att).slice(0, 200)}`);
+    // att.name = "spaces/.../messages/.../attachments/..." — the correct API path
+    // att.attachmentDataRef.resourceName = base64 protobuf blob — NOT a URL segment
+    const attachmentPath = att.name as string | undefined;
+    if (!attachmentPath) {
+      logger.warn(`[attachment] No att.name — skipping: ${JSON.stringify(att).slice(0, 200)}`);
       continue;
     }
 
     const mimeType: string = att.contentType || "application/octet-stream";
-    const originalName: string = att.name || resourceName.split("/").pop() || "attachment";
+    // att.contentName is the original filename (e.g. "photo.jpg")
+    const originalName: string = att.contentName || attachmentPath.split("/").pop() || "attachment";
 
-    // Derive extension from mimeType or original name
+    // Derive extension from original filename or mimeType
     let ext = extname(originalName);
     if (!ext) {
       const mimeToExt: Record<string, string> = {
@@ -498,6 +501,7 @@ async function downloadAttachments(
         "application/pdf": ".pdf",
         "text/plain": ".txt",
         "text/csv": ".csv",
+        "application/zip": ".zip",
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": ".xlsx",
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
       };
@@ -508,9 +512,10 @@ async function downloadAttachments(
     const localPath = join(mediaDir, filename);
 
     try {
-      // Chat API media download: GET /v1/media/{resourceName}?alt=media
-      const downloadUrl = `https://chat.googleapis.com/v1/media/${resourceName}?alt=media`;
-      logger.info(`[attachment] Downloading ${resourceName} → ${filename}`);
+      // Chat API: GET /v1/{attachment.name}/media?alt=media
+      // att.name = "spaces/.../messages/.../attachments/..."
+      const downloadUrl = `https://chat.googleapis.com/v1/${attachmentPath}/media?alt=media`;
+      logger.info(`[attachment] Downloading ${attachmentPath} → ${filename}`);
 
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), 30_000);
@@ -537,7 +542,7 @@ async function downloadAttachments(
       logger.info(`[attachment] Saved ${buffer.length} bytes → ${localPath}`);
       results.push({ localPath, mimeType, filename });
     } catch (err: any) {
-      logger.error(`[attachment] Download error for ${resourceName}: ${err.message}`);
+      logger.error(`[attachment] Download error for ${attachmentPath}: ${err.message}`);
     }
   }
 
@@ -940,7 +945,8 @@ async function pollOnce(): Promise<void> {
       if (!targetSpaces.has(space)) continue;
 
       const text = (chatMsg.text || "").trim();
-      const rawAttachments: any[] = chatMsg.attachments || [];
+      // Google Chat Pub/Sub uses "attachment" (singular array), not "attachments"
+      const rawAttachments: any[] = chatMsg.attachment || chatMsg.attachments || [];
       // Require either text or attachments — skip empty messages
       if (!text && rawAttachments.length === 0) continue;
 

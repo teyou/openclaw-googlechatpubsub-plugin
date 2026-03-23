@@ -774,8 +774,8 @@ async function processMessageInPipeline(params: {
 async function sendReaction(
   oauthToken: string,
   messageName: string,
-  emoji: string = "👀"
-): Promise<void> {
+  emoji: string = "⏳"
+): Promise<string | undefined> {
   const url = `https://chat.googleapis.com/v1/${messageName}/reactions`;
   const { status, data } = await httpJson(url, {
     method: "POST",
@@ -787,8 +787,10 @@ async function sendReaction(
     logger.warn(
       `Reaction failed (${status}): ${JSON.stringify(data).slice(0, 300)}`
     );
+    return undefined;
   } else {
-    logger.info(`👀 Reacted to ${messageName}`);
+    logger.info(`⏳ Reacted to ${messageName} (reaction: ${data?.name})`);
+    return data?.name as string | undefined;
   }
 }
 
@@ -857,9 +859,10 @@ async function pollOnce(): Promise<void> {
       const spaceReplyInThread = routingEntry?.replyInThread ?? false;
       const spaceThreadIsolation = routingEntry?.threadSessionIsolation ?? spaceReplyInThread;
 
-      // React with 👀 to acknowledge receipt
+      // React with ⏳ to acknowledge receipt (stored so we can remove it after reply)
+      let pendingReactionName: string | undefined;
       if (msgName) {
-        await sendReaction(oauthToken, msgName).catch(() => {});
+        pendingReactionName = await sendReaction(oauthToken, msgName).catch(() => undefined);
       }
 
       // Process each matched agent through the in-process pipeline
@@ -888,6 +891,21 @@ async function pollOnce(): Promise<void> {
             `[${agent.agentId}] Pipeline error: ${err.message}`
           );
         }
+      }
+
+      // Remove the ⏳ reaction now that the agent has finished replying
+      if (pendingReactionName) {
+        try {
+          const reactionToken = await getOAuthToken();
+          await httpJson(`https://chat.googleapis.com/v1/${pendingReactionName}`, {
+            method: "DELETE",
+            headers: { Authorization: `Bearer ${reactionToken}` },
+          });
+          logger.info(`🧹 Removed ⏳ reaction: ${pendingReactionName}`);
+        } catch (err: any) {
+          logger.warn(`Failed to remove ⏳ reaction: ${err.message}`);
+        }
+        pendingReactionName = undefined;
       }
 
       if (msgName) {

@@ -705,9 +705,9 @@
     <div class="page-hero">
       <div class="tag">📦 Channel Plugin</div>
       <h1><code>googlechatpubsub</code><br>Setup &amp; Installation Guide</h1>
-      <p>Connect OpenClaw agents to Google Chat spaces via Pub/Sub — no @mention required. Full multi-agent routing, thread isolation, and auto-renewing subscriptions.</p>
+      <p>Connect OpenClaw agents to Google Chat spaces via Pub/Sub — no @mention required. Full multi-agent routing, thread isolation, file attachment support, and auto-renewing subscriptions.</p>
       <div class="meta">
-        <span class="meta-item">📌 Version <strong>0.2.0-alpha</strong></span>
+        <span class="meta-item">📌 Version <strong>0.3.0-alpha</strong></span>
         <span class="meta-item">🔧 Plugin type <strong>channel</strong></span>
         <span class="meta-item">☁️ Requires <strong>GCP + Workspace</strong></span>
       </div>
@@ -981,7 +981,7 @@
             <ul>
               <li><code>https://www.googleapis.com/auth/chat.messages</code> — read messages + send replies (supersedes <code>chat.messages.readonly</code>)</li>
               <li><code>https://www.googleapis.com/auth/chat.spaces.readonly</code> — create Workspace Events subscriptions on spaces</li>
-              <li><code>https://www.googleapis.com/auth/chat.messages.reactions.create</code> — add 👀 emoji reactions</li>
+              <li><code>https://www.googleapis.com/auth/chat.messages.reactions</code> — add/remove emoji reactions</li>
               <li><code>https://www.googleapis.com/auth/pubsub</code> — pull messages from Pub/Sub subscription</li>
             </ul>
             <div class="callout info">
@@ -1216,7 +1216,7 @@ git clone https://github.com/teyou/openclaw-googlechatpubsub-plugin.git \
   &response_type=code
   &scope=https://www.googleapis.com/auth/chat.messages
          https://www.googleapis.com/auth/chat.spaces.readonly
-         https://www.googleapis.com/auth/chat.messages.reactions.create
+         https://www.googleapis.com/auth/chat.messages.reactions
          https://www.googleapis.com/auth/pubsub
   &access_type=offline
   &prompt=consent</code></pre>
@@ -1567,7 +1567,7 @@ openclaw plugins list</code></pre>
             <span class="trouble-title">403 error when adding reactions</span>
           </div>
           <div class="trouble-body">
-            <p>The OAuth token is missing the <code>chat.messages.reactions.create</code> scope.</p>
+            <p>The OAuth token is missing the <code>chat.messages.reactions</code> scope.</p>
             <p><strong>Fix:</strong> Add the scope to the OAuth consent screen (GCP → APIs &amp; Services → OAuth consent screen → Scopes), then re-run the OAuth flow to get a new token with the updated scopes.</p>
           </div>
         </div>
@@ -1781,7 +1781,7 @@ openclaw plugins list</code></pre>
     <a href="https://developers.google.com/workspace/chat" target="_blank">Google Chat API ↗</a>
   </div>
   <div class="footer-right">
-    <span>v0.2.0-alpha</span>
+    <span>v0.3.0-alpha</span>
     <span class="built-badge">⚡ Built with OpenClaw</span>
   </div>
 </footer>

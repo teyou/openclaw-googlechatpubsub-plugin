@@ -35,6 +35,7 @@ Workspace Events API ──► Cloud Pub/Sub Topic
 - **Multi-agent routing** — keyword matching + always-listen rules
 - **Thread-first replies** — bot replies in threads, never clutters main window
 - **Thread-scoped sessions** — each thread gets its own conversation context
+- **File attachment support** — downloads user-uploaded files (images, PDFs, docs) via Chat API and passes them to agents
 - **Emoji reactions** — 👀 on received messages via Chat Reactions API
 - **Auto-renewing subscriptions** — handles the 4-hour Workspace Events TTL automatically
 - **In-process pipeline** — uses OpenClaw SDK directly (no subprocess hacks)
@@ -100,7 +101,7 @@ gcloud pubsub topics add-iam-policy-binding openclaw-chat-events \
 5. Add scopes:
    - `https://www.googleapis.com/auth/chat.messages` (read + send; supersedes `chat.messages.readonly`)
    - `https://www.googleapis.com/auth/chat.spaces.readonly`
-   - `https://www.googleapis.com/auth/chat.messages.reactions.create`
+   - `https://www.googleapis.com/auth/chat.messages.reactions`
    - `https://www.googleapis.com/auth/pubsub`
 
 ### 4. Create OAuth Client
@@ -115,7 +116,7 @@ gcloud pubsub topics add-iam-policy-binding openclaw-chat-events \
 Generate the authorization URL:
 
 ```
-https://accounts.google.com/o/oauth2/v2/auth?client_id=YOUR_CLIENT_ID&redirect_uri=http://localhost:3000/oauth/callback&response_type=code&scope=https://www.googleapis.com/auth/chat.messages+https://www.googleapis.com/auth/chat.spaces.readonly+https://www.googleapis.com/auth/chat.messages.reactions.create+https://www.googleapis.com/auth/pubsub&access_type=offline&prompt=consent
+https://accounts.google.com/o/oauth2/v2/auth?client_id=YOUR_CLIENT_ID&redirect_uri=http://localhost:3000/oauth/callback&response_type=code&scope=https://www.googleapis.com/auth/chat.messages+https://www.googleapis.com/auth/chat.spaces.readonly+https://www.googleapis.com/auth/chat.messages.reactions+https://www.googleapis.com/auth/pubsub&access_type=offline&prompt=consent
 ```
 
 Open the URL, grant consent, copy the `code` parameter from the redirect, then exchange it:
@@ -263,7 +264,7 @@ When `replyInThread` is enabled and `threadSessionIsolation` is not set, it defa
 | Subscription fails with 403/404 | OAuth user must be a member of the target space |
 | Messages not arriving | Verify IAM binding on Pub/Sub topic for `chat-api-push@system.gserviceaccount.com` |
 | OAuth token expired | Plugin auto-refreshes; if refresh_token revoked, re-run the auth flow |
-| 403 on reactions | Missing `chat.messages.reactions.create` scope; re-auth with all scopes |
+| 403 on reactions | Missing `chat.messages.reactions` scope; re-auth with all scopes |
 | Multiple replies per message | Check for duplicate listener processes; only one should run |
 
 ## Contributing

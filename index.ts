@@ -182,7 +182,7 @@ async function getBotToken(): Promise<string> {
     JSON.stringify({
       iss: sa.client_email,
       scope:
-        "https://www.googleapis.com/auth/chat.bot https://www.googleapis.com/auth/chat.messages.reactions.create",
+        "https://www.googleapis.com/auth/chat.bot https://www.googleapis.com/auth/chat.messages.reactions",
       aud: "https://oauth2.googleapis.com/token",
       iat,
       exp,

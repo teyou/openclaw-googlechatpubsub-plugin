@@ -14,8 +14,10 @@ import { resolve, join, extname } from "node:path";
 import { createSign, randomUUID } from "node:crypto";
 import {
   resolveInboundRouteEnvelopeBuilderWithRuntime,
-  createReplyPrefixOptions,
 } from "openclaw/plugin-sdk/googlechat";
+import {
+  createReplyPrefixOptions,
+} from "openclaw/plugin-sdk/channel-runtime";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -1074,7 +1076,11 @@ export default function register(api: any) {
       aliases: ["gchatpubsub", "gchat-pubsub"],
     },
     capabilities: { chatTypes: ["group"], reactions: true },
-    listActions: () => ["send", "react", "reactions"] as any[],
+    describeMessageTool: () => ({
+      actions: ["send", "react", "reactions", "upload-file"] as const,
+      capabilities: null,
+      schema: null,
+    }),
     config: {
       listAccountIds: () => ["default"],
       resolveAccount: (cfg: any) => {

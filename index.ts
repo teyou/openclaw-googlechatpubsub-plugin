@@ -311,8 +311,12 @@ async function ackMessages(token: string, ackIds: string[]): Promise<void> {
 
 // ── Workspace Events subscriptions ──────────────────────────────────────────
 
+function resolveStateDir(): string {
+  return pluginApi?.runtime?.state?.resolveStateDir?.() || resolve(process.cwd(), '..');
+}
+
 function loadSubState(): Record<string, any> {
-  const stateDir = process.env.OPENCLAW_DIR || `${process.env.HOME}/.openclaw`;
+  const stateDir = resolveStateDir();
   const fp = resolve(stateDir, STATE_FILE_NAME);
   if (existsSync(fp)) {
     try {
@@ -323,7 +327,7 @@ function loadSubState(): Record<string, any> {
 }
 
 function saveSubState(state: Record<string, any>): void {
-  const stateDir = process.env.OPENCLAW_DIR || `${process.env.HOME}/.openclaw`;
+  const stateDir = resolveStateDir();
   const fp = resolve(stateDir, STATE_FILE_NAME);
   writeFileSync(fp, JSON.stringify(state, null, 2));
 }
@@ -471,7 +475,7 @@ async function downloadAttachments(
 ): Promise<DownloadedAttachment[]> {
   if (!attachments || attachments.length === 0) return [];
 
-  const stateDir = process.env.OPENCLAW_DIR || `${process.env.HOME}/.openclaw`;
+  const stateDir = resolveStateDir();
   const mediaDir = join(stateDir, "media", "inbound");
   try {
     mkdirSync(mediaDir, { recursive: true });

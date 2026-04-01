@@ -55,7 +55,7 @@
         }
       }
     },
-    "required": ["projectId", "topicId", "subscriptionId", "oauth", "bindings"]
+    "required": []
   },
   "uiHints": {
     "enabled": { "label": "Enable Pub/Sub Listener" },

@@ -1334,6 +1334,17 @@ export default function register(api: any) {
       capabilities: null,
       schema: null,
     }),
+    messaging: {
+      targetResolver: {
+        hint: "spaces/<SPACE_ID>",
+        looksLikeId: (raw: string) => /^spaces\/[a-zA-Z0-9_-]+$/.test(raw.trim()),
+        resolveTarget: async ({ normalized }: any) => {
+          const to = normalized?.trim();
+          if (!to || !/^spaces\/[a-zA-Z0-9_-]+$/.test(to)) return null;
+          return { to, kind: "group", source: "normalized" };
+        },
+      },
+    },
     config: {
       listAccountIds: () => ["default"],
       resolveAccount: (cfg: any) => {
@@ -1401,14 +1412,23 @@ export default function register(api: any) {
         try {
           const token = await getBotToken();
           const space = target;
-          const { status, data } = await httpJson(
-            `https://chat.googleapis.com/v1/${space}/messages`,
-            {
-              method: "POST",
-              headers: { Authorization: `Bearer ${token}` },
-              body: { text },
-            }
-          );
+          // Respect replyInThread: if threadId/replyTo is provided, reply in that thread.
+          const replyToThread = params.threadId || params.replyTo;
+          const binding = config?.bindings?.find((b: any) => b.space === space);
+          const bindingReplyInThread = binding?.replyInThread ?? false;
+          const msgBody: any = { text };
+          let url = `https://chat.googleapis.com/v1/${space}/messages`;
+          if (replyToThread) {
+            msgBody.thread = { name: replyToThread };
+            url += `?messageReplyOption=REPLY_MESSAGE_FALLBACK_TO_NEW_THREAD`;
+          } else if (bindingReplyInThread) {
+            logger.warn(`[handleAction.send] replyInThread=true for ${space} but no threadId provided — landing in main chat`);
+          }
+          const { status, data } = await httpJson(url, {
+            method: "POST",
+            headers: { Authorization: `Bearer ${token}` },
+            body: msgBody,
+          });
           return { ok: status < 400, messageId: data?.name };
         } catch (e: any) {
           return { ok: false, error: `Send failed: ${e.message}` };
@@ -1419,21 +1439,28 @@ export default function register(api: any) {
     },
     outbound: {
       deliveryMode: "direct",
-      sendText: async ({ text, target }: any) => {
+      sendText: async ({ text, target, threadId, replyTo }: any) => {
         try {
           const token = await getBotToken();
           const space = target || config?.bindings?.[0]?.space;
           if (!space) return { ok: false };
 
+          const replyToThread = threadId || replyTo;
+          const binding = config?.bindings?.find((b: any) => b.space === space);
+          const bindingReplyInThread = binding?.replyInThread ?? false;
           const msgBody: any = { text };
-          const { status, data } = await httpJson(
-            `https://chat.googleapis.com/v1/${space}/messages`,
-            {
-              method: "POST",
-              headers: { Authorization: `Bearer ${token}` },
-              body: msgBody,
-            }
-          );
+          let url = `https://chat.googleapis.com/v1/${space}/messages`;
+          if (replyToThread) {
+            msgBody.thread = { name: replyToThread };
+            url += `?messageReplyOption=REPLY_MESSAGE_FALLBACK_TO_NEW_THREAD`;
+          } else if (bindingReplyInThread) {
+            logger.warn(`[outbound.sendText] replyInThread=true for ${space} but no threadId — landing in main chat`);
+          }
+          const { status } = await httpJson(url, {
+            method: "POST",
+            headers: { Authorization: `Bearer ${token}` },
+            body: msgBody,
+          });
           return { ok: status < 400 };
         } catch (e: any) {
           logger.error(`outbound sendText error: ${e.message}`);

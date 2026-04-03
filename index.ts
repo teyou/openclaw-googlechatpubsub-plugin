@@ -50,6 +50,7 @@ interface PubSubConfig {
   };
   bindings: SpaceBinding[];
   crossAgentDispatch?: boolean;
+  silentReply?: boolean;
 }
 
 interface RoutingEntry {
@@ -921,38 +922,45 @@ async function processMessageInPipeline(params: {
     }
   }
 
-  // 5) Typing indicator
+  // 5) Typing indicator (skipped when silentReply is true)
+  //    silentReply=true (default): no typing message posted — reply sent directly as a new POST
+  //    silentReply=false: legacy behaviour — post "_typing..._" then PATCH with the reply
+  const silentReply = config.silentReply !== false; // default true
   let typingMessageName: string | undefined;
-  try {
-    const botToken = await getBotToken();
-    const typingBody: any = { text: "_typing..._" };
-    if (replyInThread && replyThreadName) {
-      typingBody.thread = { name: replyThreadName };
-    } else if (threadName) {
-      typingBody.thread = { name: threadName };
-    }
-    const typingUrl = replyInThread && replyThreadName
-      ? `https://chat.googleapis.com/v1/${space}/messages?messageReplyOption=${replyMessageOption}`
-      : `https://chat.googleapis.com/v1/${space}/messages`;
-
-    logger.info(`⏳ Sending typing indicator to ${space} (thread: ${replyThreadName || threadName || 'none'}, replyInThread: ${replyInThread})`);
-    const result = await httpJson(typingUrl, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${botToken}` },
-      body: typingBody,
-    });
-    logger.info(`⏳ Typing indicator result: status=${result.status} name=${result.data?.name || 'none'}`);
-    if (result.status < 400 && result.data?.name) {
-      typingMessageName = result.data.name;
-      // Capture the actual thread name from the response (important for new threads)
-      if (result.data?.thread?.name && !replyThreadName) {
-        replyThreadName = result.data.thread.name;
+  if (!silentReply) {
+    try {
+      const botToken = await getBotToken();
+      const typingBody: any = { text: "_typing..._" };
+      if (replyInThread && replyThreadName) {
+        typingBody.thread = { name: replyThreadName };
+      } else if (threadName) {
+        typingBody.thread = { name: threadName };
       }
-    } else {
-      logger.warn(`Typing indicator failed: ${result.status} ${JSON.stringify(result.data).slice(0, 200)}`);
+      const typingUrl = replyInThread && replyThreadName
+        ? `https://chat.googleapis.com/v1/${space}/messages?messageReplyOption=${replyMessageOption}`
+        : `https://chat.googleapis.com/v1/${space}/messages`;
+
+      logger.info(`⏳ Sending typing indicator to ${space} (thread: ${replyThreadName || threadName || 'none'}, replyInThread: ${replyInThread})`);
+      const result = await httpJson(typingUrl, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${botToken}` },
+        body: typingBody,
+      });
+      logger.info(`⏳ Typing indicator result: status=${result.status} name=${result.data?.name || 'none'}`);
+      if (result.status < 400 && result.data?.name) {
+        typingMessageName = result.data.name;
+        // Capture the actual thread name from the response (important for new threads)
+        if (result.data?.thread?.name && !replyThreadName) {
+          replyThreadName = result.data.thread.name;
+        }
+      } else {
+        logger.warn(`Typing indicator failed: ${result.status} ${JSON.stringify(result.data).slice(0, 200)}`);
+      }
+    } catch (err: any) {
+      logger.warn(`Typing indicator exception: ${err.message}`);
     }
-  } catch (err: any) {
-    logger.warn(`Typing indicator exception: ${err.message}`);
+  } else {
+    logger.info(`🔇 silentReply=true — skipping typing indicator`);
   }
 
   // 6) Dispatch reply through the OpenClaw agent pipeline

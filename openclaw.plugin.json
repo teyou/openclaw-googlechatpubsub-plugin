@@ -3,7 +3,7 @@
   "kind": "channel",
   "name": "Google Chat Pub/Sub Listener",
   "description": "Listen to Google Chat spaces via Workspace Events + Pub/Sub — no @mention required. Multi-agent routing with keyword and alwaysListen support.",
-  "version": "0.1.0",
+  "version": "0.6.0",
   "channels": ["googlechatpubsub"],
   "configSchema": {
     "type": "object",
@@ -17,6 +17,7 @@
       "renewalBufferMinutes": { "type": "number", "minimum": 5, "default": 30 },
       "agentTimeoutSeconds": { "type": "number", "minimum": 10, "default": 60 },
       "serviceAccountFile": { "type": "string", "description": "Path to Google Chat bot service account JSON (falls back to channels.googlechat.serviceAccountFile)" },
+      "crossAgentDispatch": { "type": "boolean", "default": false, "description": "When true, agent replies mentioning other agents' keywords trigger automatic cross-dispatch to those agents." },
       "oauth": {
         "type": "object",
         "additionalProperties": false,

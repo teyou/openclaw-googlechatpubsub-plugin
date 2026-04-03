@@ -49,6 +49,7 @@ interface PubSubConfig {
     tokensFile: string;
   };
   bindings: SpaceBinding[];
+  crossAgentDispatch?: boolean;
 }
 
 interface RoutingEntry {
@@ -83,6 +84,217 @@ const MAX_DEDUP = 500;
 const RENEWAL_INTERVAL = 300_000; // 5 min
 const SUBSCRIPTION_TTL = 14_400; // 4h in seconds
 const STATE_FILE_NAME = "gchat-pubsub-subscription-state.json";
+
+// ── Per-session message queue (prevents drops when session is busy) ──────────
+
+interface QueuedMessage {
+  agent: AgentBinding;
+  space: string;
+  spaceDisplayName: string;
+  senderId: string;
+  senderName: string;
+  text: string;
+  messageName: string;
+  threadName: string;
+  eventTime: string;
+  replyInThread: boolean;
+  threadSessionIsolation: boolean;
+  attachmentPaths: string[];
+  crossDispatchChainKey?: string;
+}
+
+/** Sessions currently running a pipeline dispatch */
+const sessionBusy = new Set<string>();
+
+/** Queued messages waiting for a busy session to finish */
+const sessionQueue = new Map<string, QueuedMessage[]>();
+
+/** Cross-agent dispatch chain tracker — prevents infinite loops */
+const crossDispatchChains = new Map<string, Set<string>>();
+const CROSS_DISPATCH_TTL_MS = 5 * 60 * 1000; // clean up chains after 5 min
+
+/**
+ * Derive the session key that processMessageInPipeline would use.
+ * Must mirror the logic in processMessageInPipeline's resolveInboundRoute call.
+ */
+function deriveSessionKey(agentId: string, space: string, threadName: string, threadSessionIsolation: boolean): string {
+  const threadId = threadName ? threadName.split("/").pop() : "";
+  const peerId = threadSessionIsolation && threadId
+    ? `${space}:thread:${threadId}`
+    : space;
+  return `agent:${agentId}:googlechatpubsub:group:${peerId}`.toLowerCase();
+}
+
+/**
+ * Process a message through the pipeline, with queue support.
+ * If the session is busy, the message is queued and will be processed
+ * when the current pipeline completes.
+ */
+async function dispatchOrQueue(msg: QueuedMessage): Promise<void> {
+  const sessionKey = deriveSessionKey(
+    msg.agent.agentId,
+    msg.space,
+    msg.threadName,
+    msg.threadSessionIsolation
+  );
+
+  if (sessionBusy.has(sessionKey)) {
+    const queue = sessionQueue.get(sessionKey) || [];
+    queue.push(msg);
+    sessionQueue.set(sessionKey, queue);
+    logger.info(`📥 [${msg.agent.agentId}] Queued message for busy session ${sessionKey} (queue depth: ${queue.length})`);
+    return;
+  }
+
+  sessionBusy.add(sessionKey);
+  try {
+    await processMessageInPipeline({
+      agentId: msg.agent.agentId,
+      space: msg.space,
+      spaceDisplayName: msg.spaceDisplayName,
+      senderId: msg.senderId,
+      senderName: msg.senderName,
+      text: msg.text,
+      messageName: msg.messageName,
+      threadName: msg.threadName,
+      eventTime: msg.eventTime,
+      replyInThread: msg.replyInThread,
+      threadSessionIsolation: msg.threadSessionIsolation,
+      attachmentPaths: msg.attachmentPaths,
+      crossDispatchChainKey: msg.crossDispatchChainKey,
+    });
+    logger.info(`✅ [${msg.agent.agentId}] Pipeline complete for ${msg.space}`);
+  } catch (err: any) {
+    logger.error(`[${msg.agent.agentId}] Pipeline error: ${err.message}`);
+  } finally {
+    sessionBusy.delete(sessionKey);
+  }
+
+  await drainQueue(sessionKey);
+}
+
+/**
+ * Process any queued messages for a session that just finished.
+ */
+async function drainQueue(sessionKey: string): Promise<void> {
+  const queue = sessionQueue.get(sessionKey);
+  if (!queue || queue.length === 0) {
+    sessionQueue.delete(sessionKey);
+    return;
+  }
+
+  const next = queue.shift()!;
+  if (queue.length === 0) {
+    sessionQueue.delete(sessionKey);
+  }
+
+  logger.info(`📤 [${next.agent.agentId}] Draining queued message for ${sessionKey} (remaining: ${queue?.length ?? 0})`);
+
+  sessionBusy.add(sessionKey);
+  try {
+    await processMessageInPipeline({
+      agentId: next.agent.agentId,
+      space: next.space,
+      spaceDisplayName: next.spaceDisplayName,
+      senderId: next.senderId,
+      senderName: next.senderName,
+      text: next.text,
+      messageName: next.messageName,
+      threadName: next.threadName,
+      eventTime: next.eventTime,
+      replyInThread: next.replyInThread,
+      threadSessionIsolation: next.threadSessionIsolation,
+      attachmentPaths: next.attachmentPaths,
+      crossDispatchChainKey: next.crossDispatchChainKey,
+    });
+    logger.info(`✅ [${next.agent.agentId}] Queued pipeline complete for ${next.space}`);
+  } catch (err: any) {
+    logger.error(`[${next.agent.agentId}] Queued pipeline error: ${err.message}`);
+  } finally {
+    sessionBusy.delete(sessionKey);
+  }
+
+  await drainQueue(sessionKey);
+}
+
+/**
+ * Cross-agent dispatch: when an agent's reply mentions other agents' keywords,
+ * internally route to those agents so they see the message.
+ * Only runs when config.crossAgentDispatch === true.
+ * Prevents infinite loops via a per-chain dispatch tracker.
+ */
+async function crossAgentDispatch(params: {
+  replyText: string;
+  sourceAgentId: string;
+  space: string;
+  spaceDisplayName: string;
+  senderName: string;
+  messageName: string;
+  threadName: string;
+  replyInThread: boolean;
+  threadSessionIsolation: boolean;
+  chainKey: string;
+}): Promise<void> {
+  const {
+    replyText, sourceAgentId, space, spaceDisplayName,
+    senderName, messageName, threadName,
+    replyInThread, threadSessionIsolation, chainKey,
+  } = params;
+
+  const entry = routingTable.get(space);
+  if (!entry || !entry.pattern) return;
+
+  let chain = crossDispatchChains.get(chainKey);
+  if (!chain) {
+    chain = new Set<string>();
+    crossDispatchChains.set(chainKey, chain);
+    setTimeout(() => crossDispatchChains.delete(chainKey), CROSS_DISPATCH_TTL_MS);
+  }
+
+  const matches = replyText.matchAll(new RegExp(entry.pattern.source, "gi"));
+  const toDispatch: AgentBinding[] = [];
+
+  for (const m of matches) {
+    const kw = m[1].toLowerCase();
+    const agent = entry.keywordAgents.get(kw);
+    if (!agent) continue;
+    if (agent.agentId === sourceAgentId) continue;
+    if (chain.has(agent.agentId)) continue;
+    if (agent.alwaysListen) continue;
+    toDispatch.push(agent);
+    chain.add(agent.agentId);
+    logger.info(`🔀 Cross-dispatch: ${sourceAgentId} mentioned '${kw}' → dispatching to ${agent.agentId}`);
+  }
+
+  if (!toDispatch.length) return;
+
+  chain.add(sourceAgentId);
+
+  const contextText = `[via ${senderName}] ${replyText}`;
+
+  const dispatchPromises: Promise<void>[] = [];
+  for (const agent of toDispatch) {
+    logger.info(`🔀 [${agent.agentId}] Cross-dispatch from ${sourceAgentId} in ${space}`);
+    dispatchPromises.push(
+      dispatchOrQueue({
+        agent,
+        space,
+        spaceDisplayName,
+        senderId: `bot:${sourceAgentId}`,
+        senderName,
+        text: contextText,
+        messageName: messageName + ":xdispatch:" + agent.agentId,
+        threadName,
+        eventTime: new Date().toISOString(),
+        replyInThread,
+        threadSessionIsolation,
+        attachmentPaths: [],
+        crossDispatchChainKey: chainKey,
+      })
+    );
+  }
+  await Promise.all(dispatchPromises);
+}
 
 // ── HTTP helper (stdlib only) ────────────────────────────────────────────────
 
@@ -571,6 +783,7 @@ async function processMessageInPipeline(params: {
   replyInThread: boolean;
   threadSessionIsolation: boolean;
   attachmentPaths?: string[];
+  crossDispatchChainKey?: string;
 }): Promise<void> {
   const {
     agentId,
@@ -585,7 +798,13 @@ async function processMessageInPipeline(params: {
     replyInThread,
     threadSessionIsolation,
     attachmentPaths = [],
+    crossDispatchChainKey,
   } = params;
+
+  // Cross-dispatch chain key: groups all dispatches from the same originating message
+  const chainKey = crossDispatchChainKey || `${threadName || space}:${messageName}:${Date.now()}`;
+  // Collect all delivered text for cross-dispatch scanning
+  const deliveredChunks: string[] = [];
 
   const api = pluginApi;
   const cfg = api.config;
@@ -760,6 +979,9 @@ async function processMessageInPipeline(params: {
         const replyText = payload.text?.trim();
         if (!replyText) return;
 
+        // Track delivered text for cross-agent dispatch
+        deliveredChunks.push(replyText);
+
         const chunkLimit = 4000;
         const chunks: string[] = [];
         if (replyText.length <= chunkLimit) {
@@ -878,6 +1100,28 @@ async function processMessageInPipeline(params: {
       logger.info(`✅ Orphaned typing message deleted`);
     } catch (err: any) {
       logger.error(`Failed to delete orphaned typing message: ${err.message}`);
+    }
+  }
+
+  // 7) Cross-agent dispatch: scan delivered text for mentions of other agents
+  //    Only runs when config.crossAgentDispatch === true
+  if (config.crossAgentDispatch && deliveredChunks.length > 0) {
+    const fullReply = deliveredChunks.join("\n");
+    try {
+      await crossAgentDispatch({
+        replyText: fullReply,
+        sourceAgentId: agentId,
+        space,
+        spaceDisplayName,
+        senderName: `${agentId} agent`,
+        messageName,
+        threadName: threadName || "",
+        replyInThread,
+        threadSessionIsolation,
+        chainKey,
+      });
+    } catch (err: any) {
+      logger.error(`Cross-agent dispatch error: ${err.message}`);
     }
   }
 }
@@ -1002,17 +1246,17 @@ async function pollOnce(): Promise<void> {
         }
       }
 
-      // Process each matched agent through the in-process pipeline
+      // Dispatch to each matched agent (with queue support for busy sessions)
+      const dispatchPromises: Promise<void>[] = [];
       for (const agent of matched) {
-        try {
-          logger.info(
-            `🤖 [${agent.agentId}] Processing via in-process pipeline for ${space} (replyInThread=${spaceReplyInThread}, threadIsolation=${spaceThreadIsolation})`
-          );
-          await processMessageInPipeline({
-            agentId: agent.agentId,
+        logger.info(
+          `🤖 [${agent.agentId}] Dispatching for ${space} (replyInThread=${spaceReplyInThread}, threadIsolation=${spaceThreadIsolation})`
+        );
+        dispatchPromises.push(
+          dispatchOrQueue({
+            agent,
             space,
-            spaceDisplayName:
-              chatMsg.space?.displayName || `space:${space}`,
+            spaceDisplayName: chatMsg.space?.displayName || `space:${space}`,
             senderId: sender.name || "",
             senderName: displayName,
             text,
@@ -1022,14 +1266,11 @@ async function pollOnce(): Promise<void> {
             replyInThread: spaceReplyInThread,
             threadSessionIsolation: spaceThreadIsolation,
             attachmentPaths: downloadedPaths,
-          });
-          logger.info(`✅ [${agent.agentId}] Pipeline complete for ${space}`);
-        } catch (err: any) {
-          logger.error(
-            `[${agent.agentId}] Pipeline error: ${err.message}`
-          );
-        }
+          })
+        );
       }
+      // Wait for all dispatches (some may return instantly if queued)
+      await Promise.all(dispatchPromises);
 
       // Remove the ⏳ reaction now that the agent has finished replying
       if (pendingReactionName) {

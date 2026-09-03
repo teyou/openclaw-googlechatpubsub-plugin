@@ -6,7 +6,7 @@ Listen to Google Chat spaces via **Workspace Events API + Cloud Pub/Sub** — no
 
 Messages arrive through Pub/Sub, get routed to one or more agents by keyword or always-listen rules, processed through the OpenClaw pipeline, and replied via the Google Chat API. Thread-first replies and per-thread session isolation are supported.
 
-> **Status:** Alpha (v0.2.0). Works in production but APIs may change.
+> **Status:** Beta (v0.8.0). Live-tested with OpenClaw 2026.8.2.
 
 ## How It Works
 
@@ -36,13 +36,15 @@ Workspace Events API ──► Cloud Pub/Sub Topic
 - **Thread-first replies** — bot replies in threads, never clutters main window
 - **Thread-scoped sessions** — each thread gets its own conversation context
 - **File attachment support** — downloads user-uploaded files (images, PDFs, docs) via Chat API and passes them to agents
+- **Outbound file uploads** — sends local files and URLs as native Chat attachments, with binary-safe multipart uploads and caption fallback
+- **Self-echo protection** — prevents user-authenticated attachment messages from re-triggering the agent pipeline
 - **Emoji reactions** — 👀 on received messages via Chat Reactions API
 - **Auto-renewing subscriptions** — handles the 4-hour Workspace Events TTL automatically
 - **In-process pipeline** — uses OpenClaw SDK directly (no subprocess hacks)
 
 ## Prerequisites
 
-- OpenClaw gateway running (v0.23+)
+- OpenClaw gateway running (2026.8.1 or newer)
 - Google Workspace account (not consumer Gmail)
 - GCP project with billing enabled
 - A Google Chat app (bot) already configured with a service account
@@ -56,16 +58,18 @@ Workspace Events API ──► Cloud Pub/Sub Topic
 openclaw plugins install @teyou/openclaw-googlechatpubsub
 ```
 
-### Option B: Manual install
+### Option B: Install from a Git checkout
 
 ```bash
-# Create the plugin directory
-mkdir -p ~/.openclaw/extensions/googlechatpubsub
-
-# Copy plugin files
-cp openclaw.plugin.json ~/.openclaw/extensions/googlechatpubsub/
-cp index.ts ~/.openclaw/extensions/googlechatpubsub/
+git clone https://github.com/teyou/openclaw-googlechatpubsub-plugin.git
+cd openclaw-googlechatpubsub-plugin
+npm ci
+npm run build
+openclaw plugins install -l .
 ```
+
+The repository tracks `dist/index.js`, so GitHub installs and release artifacts
+contain the runtime entrypoint even before a local rebuild.
 
 ## GCP Setup
 
@@ -245,6 +249,7 @@ When `replyInThread` is enabled and `threadSessionIsolation` is not set, it defa
 | `renewalBufferMinutes` | number | `30` | Minutes before expiry to renew subscription |
 | `agentTimeoutSeconds` | number | `60` | Timeout for agent pipeline execution |
 | `serviceAccountFile` | string | *from googlechat* | Path to bot service account JSON |
+| `silentReply` | boolean | `false` | Suppress typing indicator messages while the agent is working |
 | `oauth.clientId` | string | *required* | OAuth 2.0 client ID |
 | `oauth.clientSecret` | string | *required* | OAuth 2.0 client secret |
 | `oauth.redirectUri` | string | — | OAuth redirect URI |
@@ -265,6 +270,7 @@ When `replyInThread` is enabled and `threadSessionIsolation` is not set, it defa
 | Messages not arriving | Verify IAM binding on Pub/Sub topic for `chat-api-push@system.gserviceaccount.com` |
 | OAuth token expired | Plugin auto-refreshes; if refresh_token revoked, re-run the auth flow |
 | 403 on reactions | Missing `chat.messages.reactions` scope; re-auth with all scopes |
+| Upload appears under the OAuth user's name | Google requires user OAuth for `attachments:upload`; authorize with a shared service identity if personal attribution is undesirable |
 | Multiple replies per message | Check for duplicate listener processes; only one should run |
 
 ## Contributing

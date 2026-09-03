@@ -1,128 +1,36 @@
-/**
- * googlechatpubsub — OpenClaw channel plugin
- *
- * Listens to Google Chat spaces via Workspace Events API + Cloud Pub/Sub.
- * Routes messages to agents by keyword or alwaysListen rules.
- * Processes messages IN-PROCESS via the OpenClaw pipeline (proper sessions).
- * Replies via Google Chat API using service account credentials.
- *
- * No @mention required. Messages arrive via Pub/Sub, not the Chat webhook.
- */
-
+// index.ts
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { resolve, join, extname } from "node:path";
 import { createSign, randomUUID } from "node:crypto";
 import {
-  resolveInboundRouteEnvelopeBuilderWithRuntime,
+  resolveInboundRouteEnvelopeBuilderWithRuntime
 } from "openclaw/plugin-sdk/inbound-envelope";
 import {
-  createReplyPrefixOptions,
+  createReplyPrefixOptions
 } from "openclaw/plugin-sdk/channel-outbound";
-
-// ── Types ────────────────────────────────────────────────────────────────────
-
-interface AgentBinding {
-  agentId: string;
-  mentionKeyword?: string;
-  alwaysListen?: boolean;
-}
-
-interface SpaceBinding {
-  space: string;
-  replyInThread?: boolean;
-  threadSessionIsolation?: boolean;
-  agents: AgentBinding[];
-}
-
-interface PubSubConfig {
-  enabled?: boolean;
-  projectId: string;
-  topicId: string;
-  subscriptionId: string;
-  pollIntervalSeconds?: number;
-  renewalBufferMinutes?: number;
-  serviceAccountFile?: string;
-  oauth: {
-    clientId: string;
-    clientSecret: string;
-    redirectUri?: string;
-    tokensFile: string;
-  };
-  bindings: SpaceBinding[];
-  crossAgentDispatch?: boolean;
-  silentReply?: boolean;
-}
-
-interface RoutingEntry {
-  keywordAgents: Map<string, AgentBinding>;
-  alwaysListen: AgentBinding[];
-  pattern: RegExp | null;
-  replyInThread: boolean;
-  threadSessionIsolation: boolean;
-}
-
-interface TokenCache {
-  token: string | null;
-  expiresAt: number;
-}
-
-// ── State (module-scoped) ────────────────────────────────────────────────────
-
-let config: PubSubConfig;
-let serviceAccountFile: string;
-let routingTable: Map<string, RoutingEntry>;
-let targetSpaces: Set<string>;
-let oauthCache: TokenCache = { token: null, expiresAt: 0 };
-let botCache: TokenCache = { token: null, expiresAt: 0 };
-let processedMsgIds = new Set<string>();
-/**
- * Chat member name (`users/<id>`) of the OAuth identity this plugin sends as.
- *
- * `attachments:upload` only accepts USER auth, so attachment messages the bot
- * posts are recorded by Google with `sender.type === "HUMAN"` and this id — they
- * are indistinguishable from a real person by type alone, and would otherwise be
- * re-ingested as fresh inbound messages (self-echo feedback loop).
- *
- * Latched opportunistically from the `sender.name` of messages this plugin
- * creates; stays null until the first successful send resolves it.
- */
-let selfUserId: string | null = null;
-let lastRenewalCheck = 0;
-let subscriptionState: Record<string, any> = {};
-let logger: any;
-let pluginApi: any; // Store the full api object for runtime access
-let pollTimer: ReturnType<typeof setInterval> | null = null;
-
-const MAX_DEDUP = 500;
-
-/**
- * Record a message id as already handled.
- *
- * Used for inbound dedup and, critically, for every message this plugin sends:
- * outbound ids are registered immediately so an echoed copy arriving over
- * Pub/Sub is dropped even before `selfUserId` has been resolved.
- */
-function markProcessed(msgName?: string | null): void {
+var config;
+var serviceAccountFile;
+var routingTable;
+var targetSpaces;
+var oauthCache = { token: null, expiresAt: 0 };
+var botCache = { token: null, expiresAt: 0 };
+var processedMsgIds = /* @__PURE__ */ new Set();
+var selfUserId = null;
+var lastRenewalCheck = 0;
+var subscriptionState = {};
+var logger;
+var pluginApi;
+var pollTimer = null;
+var MAX_DEDUP = 500;
+function markProcessed(msgName) {
   if (!msgName) return;
   if (processedMsgIds.size > MAX_DEDUP) processedMsgIds.clear();
   processedMsgIds.add(msgName);
 }
-
-/**
- * True when an inbound message was posted by this plugin itself.
- *
- * Only meaningful once `selfUserId` is known; until then this is a no-op and
- * the outbound dedup in `markProcessed()` is what prevents the echo.
- */
-function isSelfMessage(sender: any): boolean {
+function isSelfMessage(sender) {
   return Boolean(selfUserId) && sender?.name === selfUserId;
 }
-
-/**
- * Latch this plugin's own Chat identity from a message it just created.
- * Idempotent and best-effort: the first send that reports a sender wins.
- */
-function rememberSelfIdentity(created: any): void {
+function rememberSelfIdentity(created) {
   if (selfUserId) return;
   const name = created?.sender?.name;
   if (typeof name === "string" && name.startsWith("users/")) {
@@ -130,71 +38,32 @@ function rememberSelfIdentity(created: any): void {
     logger?.info(`[self] Resolved own Chat identity: ${selfUserId}`);
   }
 }
-const RENEWAL_INTERVAL = 300_000; // 5 min
-const SUBSCRIPTION_TTL = 14_400; // 4h in seconds
-const STATE_FILE_NAME = "gchat-pubsub-subscription-state.json";
-
-// ── Per-session message queue (prevents drops when session is busy) ──────────
-
-interface QueuedMessage {
-  agent: AgentBinding;
-  space: string;
-  spaceDisplayName: string;
-  senderId: string;
-  senderName: string;
-  text: string;
-  messageName: string;
-  threadName: string;
-  eventTime: string;
-  replyInThread: boolean;
-  threadSessionIsolation: boolean;
-  attachmentPaths: string[];
-  crossDispatchChainKey?: string;
-}
-
-/** Sessions currently running a pipeline dispatch */
-const sessionBusy = new Set<string>();
-
-/** Queued messages waiting for a busy session to finish */
-const sessionQueue = new Map<string, QueuedMessage[]>();
-
-/** Cross-agent dispatch chain tracker — prevents infinite loops */
-const crossDispatchChains = new Map<string, Set<string>>();
-const CROSS_DISPATCH_TTL_MS = 5 * 60 * 1000; // clean up chains after 5 min
-
-/**
- * Derive the session key that processMessageInPipeline would use.
- * Must mirror the logic in processMessageInPipeline's resolveInboundRoute call.
- */
-function deriveSessionKey(agentId: string, space: string, threadName: string, threadSessionIsolation: boolean): string {
+var RENEWAL_INTERVAL = 3e5;
+var SUBSCRIPTION_TTL = 14400;
+var STATE_FILE_NAME = "gchat-pubsub-subscription-state.json";
+var sessionBusy = /* @__PURE__ */ new Set();
+var sessionQueue = /* @__PURE__ */ new Map();
+var crossDispatchChains = /* @__PURE__ */ new Map();
+var CROSS_DISPATCH_TTL_MS = 5 * 60 * 1e3;
+function deriveSessionKey(agentId, space, threadName, threadSessionIsolation) {
   const threadId = threadName ? threadName.split("/").pop() : "";
-  const peerId = threadSessionIsolation && threadId
-    ? `${space}:thread:${threadId}`
-    : space;
+  const peerId = threadSessionIsolation && threadId ? `${space}:thread:${threadId}` : space;
   return `agent:${agentId}:googlechatpubsub:group:${peerId}`.toLowerCase();
 }
-
-/**
- * Process a message through the pipeline, with queue support.
- * If the session is busy, the message is queued and will be processed
- * when the current pipeline completes.
- */
-async function dispatchOrQueue(msg: QueuedMessage): Promise<void> {
+async function dispatchOrQueue(msg) {
   const sessionKey = deriveSessionKey(
     msg.agent.agentId,
     msg.space,
     msg.threadName,
     msg.threadSessionIsolation
   );
-
   if (sessionBusy.has(sessionKey)) {
     const queue = sessionQueue.get(sessionKey) || [];
     queue.push(msg);
     sessionQueue.set(sessionKey, queue);
-    logger.info(`📥 [${msg.agent.agentId}] Queued message for busy session ${sessionKey} (queue depth: ${queue.length})`);
+    logger.info(`\u{1F4E5} [${msg.agent.agentId}] Queued message for busy session ${sessionKey} (queue depth: ${queue.length})`);
     return;
   }
-
   sessionBusy.add(sessionKey);
   try {
     await processMessageInPipeline({
@@ -210,35 +79,27 @@ async function dispatchOrQueue(msg: QueuedMessage): Promise<void> {
       replyInThread: msg.replyInThread,
       threadSessionIsolation: msg.threadSessionIsolation,
       attachmentPaths: msg.attachmentPaths,
-      crossDispatchChainKey: msg.crossDispatchChainKey,
+      crossDispatchChainKey: msg.crossDispatchChainKey
     });
-    logger.info(`✅ [${msg.agent.agentId}] Pipeline complete for ${msg.space}`);
-  } catch (err: any) {
+    logger.info(`\u2705 [${msg.agent.agentId}] Pipeline complete for ${msg.space}`);
+  } catch (err) {
     logger.error(`[${msg.agent.agentId}] Pipeline error: ${err.message}`);
   } finally {
     sessionBusy.delete(sessionKey);
   }
-
   await drainQueue(sessionKey);
 }
-
-/**
- * Process any queued messages for a session that just finished.
- */
-async function drainQueue(sessionKey: string): Promise<void> {
+async function drainQueue(sessionKey) {
   const queue = sessionQueue.get(sessionKey);
   if (!queue || queue.length === 0) {
     sessionQueue.delete(sessionKey);
     return;
   }
-
-  const next = queue.shift()!;
+  const next = queue.shift();
   if (queue.length === 0) {
     sessionQueue.delete(sessionKey);
   }
-
-  logger.info(`📤 [${next.agent.agentId}] Draining queued message for ${sessionKey} (remaining: ${queue?.length ?? 0})`);
-
+  logger.info(`\u{1F4E4} [${next.agent.agentId}] Draining queued message for ${sessionKey} (remaining: ${queue?.length ?? 0})`);
   sessionBusy.add(sessionKey);
   try {
     await processMessageInPipeline({
@@ -254,55 +115,39 @@ async function drainQueue(sessionKey: string): Promise<void> {
       replyInThread: next.replyInThread,
       threadSessionIsolation: next.threadSessionIsolation,
       attachmentPaths: next.attachmentPaths,
-      crossDispatchChainKey: next.crossDispatchChainKey,
+      crossDispatchChainKey: next.crossDispatchChainKey
     });
-    logger.info(`✅ [${next.agent.agentId}] Queued pipeline complete for ${next.space}`);
-  } catch (err: any) {
+    logger.info(`\u2705 [${next.agent.agentId}] Queued pipeline complete for ${next.space}`);
+  } catch (err) {
     logger.error(`[${next.agent.agentId}] Queued pipeline error: ${err.message}`);
   } finally {
     sessionBusy.delete(sessionKey);
   }
-
   await drainQueue(sessionKey);
 }
-
-/**
- * Cross-agent dispatch: when an agent's reply mentions other agents' keywords,
- * internally route to those agents so they see the message.
- * Only runs when config.crossAgentDispatch === true.
- * Prevents infinite loops via a per-chain dispatch tracker.
- */
-async function crossAgentDispatch(params: {
-  replyText: string;
-  sourceAgentId: string;
-  space: string;
-  spaceDisplayName: string;
-  senderName: string;
-  messageName: string;
-  threadName: string;
-  replyInThread: boolean;
-  threadSessionIsolation: boolean;
-  chainKey: string;
-}): Promise<void> {
+async function crossAgentDispatch(params) {
   const {
-    replyText, sourceAgentId, space, spaceDisplayName,
-    senderName, messageName, threadName,
-    replyInThread, threadSessionIsolation, chainKey,
+    replyText,
+    sourceAgentId,
+    space,
+    spaceDisplayName,
+    senderName,
+    messageName,
+    threadName,
+    replyInThread,
+    threadSessionIsolation,
+    chainKey
   } = params;
-
   const entry = routingTable.get(space);
   if (!entry || !entry.pattern) return;
-
   let chain = crossDispatchChains.get(chainKey);
   if (!chain) {
-    chain = new Set<string>();
+    chain = /* @__PURE__ */ new Set();
     crossDispatchChains.set(chainKey, chain);
     setTimeout(() => crossDispatchChains.delete(chainKey), CROSS_DISPATCH_TTL_MS);
   }
-
   const matches = replyText.matchAll(new RegExp(entry.pattern.source, "gi"));
-  const toDispatch: AgentBinding[] = [];
-
+  const toDispatch = [];
   for (const m of matches) {
     const kw = m[1].toLowerCase();
     const agent = entry.keywordAgents.get(kw);
@@ -312,18 +157,14 @@ async function crossAgentDispatch(params: {
     if (agent.alwaysListen) continue;
     toDispatch.push(agent);
     chain.add(agent.agentId);
-    logger.info(`🔀 Cross-dispatch: ${sourceAgentId} mentioned '${kw}' → dispatching to ${agent.agentId}`);
+    logger.info(`\u{1F500} Cross-dispatch: ${sourceAgentId} mentioned '${kw}' \u2192 dispatching to ${agent.agentId}`);
   }
-
   if (!toDispatch.length) return;
-
   chain.add(sourceAgentId);
-
   const contextText = `[via ${senderName}] ${replyText}`;
-
-  const dispatchPromises: Promise<void>[] = [];
+  const dispatchPromises = [];
   for (const agent of toDispatch) {
-    logger.info(`🔀 [${agent.agentId}] Cross-dispatch from ${sourceAgentId} in ${space}`);
+    logger.info(`\u{1F500} [${agent.agentId}] Cross-dispatch from ${sourceAgentId} in ${space}`);
     dispatchPromises.push(
       dispatchOrQueue({
         agent,
@@ -334,43 +175,37 @@ async function crossAgentDispatch(params: {
         text: contextText,
         messageName: messageName + ":xdispatch:" + agent.agentId,
         threadName,
-        eventTime: new Date().toISOString(),
+        eventTime: (/* @__PURE__ */ new Date()).toISOString(),
         replyInThread,
         threadSessionIsolation,
         attachmentPaths: [],
-        crossDispatchChainKey: chainKey,
+        crossDispatchChainKey: chainKey
       })
     );
   }
   await Promise.all(dispatchPromises);
 }
-
-// ── HTTP helper (stdlib only) ────────────────────────────────────────────────
-
-async function httpJson(
-  url: string,
-  opts: { method?: string; headers?: Record<string, string>; body?: any; timeoutMs?: number } = {}
-): Promise<{ status: number; data: any }> {
-  const { method = "GET", headers = {}, body, timeoutMs = 15000 } = opts;
+async function httpJson(url, opts = {}) {
+  const { method = "GET", headers = {}, body, timeoutMs = 15e3 } = opts;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const res = await fetch(url, {
       method,
       headers: { "Content-Type": "application/json", ...headers },
-      body: body ? JSON.stringify(body) : undefined,
-      signal: controller.signal,
+      body: body ? JSON.stringify(body) : void 0,
+      signal: controller.signal
     });
     clearTimeout(timer);
     const text = await res.text();
-    let data: any;
+    let data;
     try {
       data = JSON.parse(text);
     } catch {
       data = text;
     }
     return { status: res.status, data };
-  } catch (e: any) {
+  } catch (e) {
     clearTimeout(timer);
     if (e.name === "AbortError") {
       throw new Error(`HTTP request timed out after ${timeoutMs}ms: ${method} ${url}`);
@@ -378,108 +213,81 @@ async function httpJson(
     throw e;
   }
 }
-
-async function httpForm(
-  url: string,
-  params: Record<string, string>
-): Promise<any> {
+async function httpForm(url, params) {
   const body = new URLSearchParams(params).toString();
   const res = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body,
+    body
   });
   return res.json();
 }
-
-// ── Auth ─────────────────────────────────────────────────────────────────────
-
-async function getOAuthToken(): Promise<string> {
-  const now = Date.now() / 1000;
+async function getOAuthToken() {
+  const now = Date.now() / 1e3;
   if (oauthCache.token && now < oauthCache.expiresAt - 60) {
     return oauthCache.token;
   }
-
   const tokensFile = config.oauth.tokensFile;
-  let tokens: any;
+  let tokens;
   try {
     tokens = JSON.parse(readFileSync(tokensFile, "utf-8"));
   } catch {
     throw new Error(`Cannot read OAuth tokens from ${tokensFile}`);
   }
-
   const result = await httpForm("https://oauth2.googleapis.com/token", {
     client_id: config.oauth.clientId,
     client_secret: config.oauth.clientSecret,
     refresh_token: tokens.refresh_token,
-    grant_type: "refresh_token",
+    grant_type: "refresh_token"
   });
-
   if (!result.access_token) {
     throw new Error(`OAuth refresh failed: ${JSON.stringify(result)}`);
   }
-
   oauthCache.token = result.access_token;
   oauthCache.expiresAt = now + (result.expires_in || 3600);
-
   tokens.access_token = result.access_token;
   if (result.refresh_token) tokens.refresh_token = result.refresh_token;
   writeFileSync(tokensFile, JSON.stringify(tokens, null, 2));
-
   logger.info(`OAuth token refreshed (expires in ${result.expires_in}s)`);
   return result.access_token;
 }
-
-async function getBotToken(): Promise<string> {
-  const now = Date.now() / 1000;
+async function getBotToken() {
+  const now = Date.now() / 1e3;
   if (botCache.token && now < botCache.expiresAt - 60) {
     return botCache.token;
   }
-
   const sa = JSON.parse(readFileSync(serviceAccountFile, "utf-8"));
   const iat = Math.floor(now);
   const exp = iat + 3600;
-
   const header = Buffer.from(JSON.stringify({ alg: "RS256", typ: "JWT" })).toString("base64url");
   const payload = Buffer.from(
     JSON.stringify({
       iss: sa.client_email,
-      scope:
-        "https://www.googleapis.com/auth/chat.bot https://www.googleapis.com/auth/chat.messages.reactions",
+      scope: "https://www.googleapis.com/auth/chat.bot https://www.googleapis.com/auth/chat.messages.reactions",
       aud: "https://oauth2.googleapis.com/token",
       iat,
-      exp,
+      exp
     })
   ).toString("base64url");
-
   const signer = createSign("RSA-SHA256");
   signer.update(`${header}.${payload}`);
   const signature = signer.sign(sa.private_key, "base64url");
   const jwt = `${header}.${payload}.${signature}`;
-
   const result = await httpForm("https://oauth2.googleapis.com/token", {
     grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer",
-    assertion: jwt,
+    assertion: jwt
   });
-
   botCache.token = result.access_token;
-  botCache.expiresAt = now + 3000;
+  botCache.expiresAt = now + 3e3;
   logger.info("Bot SA token minted (valid ~50 min)");
   return result.access_token;
 }
-
-// ── Routing ──────────────────────────────────────────────────────────────────
-
-function buildRoutingTable(
-  bindings: SpaceBinding[]
-): Map<string, RoutingEntry> {
-  const table = new Map<string, RoutingEntry>();
-
+function buildRoutingTable(bindings) {
+  const table = /* @__PURE__ */ new Map();
   for (const binding of bindings) {
-    const keywordAgents = new Map<string, AgentBinding>();
-    const alwaysListen: AgentBinding[] = [];
-    const keywords: string[] = [];
-
+    const keywordAgents = /* @__PURE__ */ new Map();
+    const alwaysListen = [];
+    const keywords = [];
     for (const agent of binding.agents) {
       const kw = (agent.mentionKeyword || "").toLowerCase();
       if (kw) {
@@ -490,41 +298,30 @@ function buildRoutingTable(
         alwaysListen.push(agent);
       }
     }
-
-    let pattern: RegExp | null = null;
+    let pattern = null;
     if (keywords.length) {
       pattern = new RegExp(
         `(?:^|[\\s@<])(${keywords.join("|")})(?:[\\s>,.:!?'")}]|$)`,
         "i"
       );
     }
-
     const replyInThread = binding.replyInThread ?? false;
-    // threadSessionIsolation defaults to true when replyInThread is enabled
     const threadSessionIsolation = binding.threadSessionIsolation ?? replyInThread;
-
     table.set(binding.space, { keywordAgents, alwaysListen, pattern, replyInThread, threadSessionIsolation });
   }
-
   return table;
 }
-
-function routeMessage(text: string, space: string): AgentBinding[] {
+function routeMessage(text, space) {
   const entry = routingTable.get(space);
   if (!entry) return [];
-
-  const matched: AgentBinding[] = [];
-  const seen = new Set<string>();
-
-  // 1) Always include alwaysListen agents
+  const matched = [];
+  const seen = /* @__PURE__ */ new Set();
   for (const agent of entry.alwaysListen) {
     if (!seen.has(agent.agentId)) {
       matched.push(agent);
       seen.add(agent.agentId);
     }
   }
-
-  // 2) Add keyword-matched agents on top (deduped)
   if (entry.pattern) {
     const matches = text.matchAll(new RegExp(entry.pattern.source, "gi"));
     for (const m of matches) {
@@ -533,77 +330,61 @@ function routeMessage(text: string, space: string): AgentBinding[] {
       if (agent && !seen.has(agent.agentId)) {
         matched.push(agent);
         seen.add(agent.agentId);
-        logger.info(`🎯 Keyword '${kw}' → agent '${agent.agentId}'`);
+        logger.info(`\u{1F3AF} Keyword '${kw}' \u2192 agent '${agent.agentId}'`);
       }
     }
   }
-
   if (matched.length) {
-    logger.info(`📨 Routed to ${matched.length} agent(s): ${matched.map(a => a.agentId).join(', ')}`);
+    logger.info(`\u{1F4E8} Routed to ${matched.length} agent(s): ${matched.map((a) => a.agentId).join(", ")}`);
   }
-
   return matched;
 }
-
-// ── Pub/Sub ──────────────────────────────────────────────────────────────────
-
-async function pullMessages(token: string): Promise<any[]> {
+async function pullMessages(token) {
   const sub = `projects/${config.projectId}/subscriptions/${config.subscriptionId}`;
   const { data } = await httpJson(
     `https://pubsub.googleapis.com/v1/${sub}:pull`,
     {
       method: "POST",
       headers: { Authorization: `Bearer ${token}` },
-      body: { maxMessages: 10, returnImmediately: true },
+      body: { maxMessages: 10, returnImmediately: true }
     }
   );
   return data.receivedMessages || [];
 }
-
-async function ackMessages(token: string, ackIds: string[]): Promise<void> {
+async function ackMessages(token, ackIds) {
   if (!ackIds.length) return;
   const sub = `projects/${config.projectId}/subscriptions/${config.subscriptionId}`;
   await httpJson(`https://pubsub.googleapis.com/v1/${sub}:acknowledge`, {
     method: "POST",
     headers: { Authorization: `Bearer ${token}` },
-    body: { ackIds },
+    body: { ackIds }
   });
 }
-
-// ── Workspace Events subscriptions ──────────────────────────────────────────
-
-function resolveStateDir(): string {
-  return pluginApi?.runtime?.state?.resolveStateDir?.() || resolve(process.cwd(), '..');
+function resolveStateDir() {
+  return pluginApi?.runtime?.state?.resolveStateDir?.() || resolve(process.cwd(), "..");
 }
-
-function loadSubState(): Record<string, any> {
+function loadSubState() {
   const stateDir = resolveStateDir();
   const fp = resolve(stateDir, STATE_FILE_NAME);
   if (existsSync(fp)) {
     try {
       return JSON.parse(readFileSync(fp, "utf-8"));
-    } catch {}
+    } catch {
+    }
   }
   return { subscriptions: {} };
 }
-
-function saveSubState(state: Record<string, any>): void {
+function saveSubState(state) {
   const stateDir = resolveStateDir();
   const fp = resolve(stateDir, STATE_FILE_NAME);
   writeFileSync(fp, JSON.stringify(state, null, 2));
 }
-
-async function ensureSubscription(
-  space: string,
-  token: string
-): Promise<void> {
+async function ensureSubscription(space, token) {
   const topic = `projects/${config.projectId}/topics/${config.topicId}`;
-  const now = Date.now() / 1000;
+  const now = Date.now() / 1e3;
   const bufferSec = (config.renewalBufferMinutes ?? 30) * 60;
-
   const existing = subscriptionState.subscriptions?.[space];
   if (existing && existing.expiresAt > now + bufferSec) {
-    // State file says subscription is fresh — but verify it's actually alive
     if (existing.name) {
       try {
         const { status: checkStatus, data: checkData } = await httpJson(
@@ -611,9 +392,8 @@ async function ensureSubscription(
           { method: "GET", headers: { Authorization: `Bearer ${token}` } }
         );
         if (checkStatus < 400 && checkData?.state === "ACTIVE") {
-          // Actually alive — use real expiry from API if available
           if (checkData.expireTime) {
-            const realExpiry = new Date(checkData.expireTime).getTime() / 1000;
+            const realExpiry = new Date(checkData.expireTime).getTime() / 1e3;
             if (realExpiry !== existing.expiresAt) {
               existing.expiresAt = realExpiry;
               saveSubState(subscriptionState);
@@ -623,37 +403,32 @@ async function ensureSubscription(
           return;
         }
         logger.warn(
-          `Subscription for ${space} state=${checkData?.state ?? checkStatus} — recreating`
+          `Subscription for ${space} state=${checkData?.state ?? checkStatus} \u2014 recreating`
         );
-      } catch (e: any) {
-        logger.warn(`Subscription verify failed for ${space}: ${e.message} — recreating`);
+      } catch (e) {
+        logger.warn(`Subscription verify failed for ${space}: ${e.message} \u2014 recreating`);
       }
     }
   }
-
   logger.info(
     `Creating/renewing Workspace Events subscription for ${space}`
   );
-
   const body = {
     targetResource: `//chat.googleapis.com/${space}`,
     eventTypes: ["google.workspace.chat.message.v1.created"],
     notificationEndpoint: { pubsubTopic: topic },
-    payloadOptions: { includeResource: true },
+    payloadOptions: { includeResource: true }
   };
-
   const { status, data } = await httpJson(
     "https://workspaceevents.googleapis.com/v1/subscriptions",
     {
       method: "POST",
       headers: { Authorization: `Bearer ${token}` },
-      body,
+      body
     }
   );
-
   if (status === 409) {
-    logger.info(`Subscription already exists for ${space} — fetching real expiry`);
-    // List subscriptions to find the real name and expiry
+    logger.info(`Subscription already exists for ${space} \u2014 fetching real expiry`);
     try {
       const filter = encodeURIComponent(`target_resource="//chat.googleapis.com/${space}"`);
       const { status: listSt, data: listData } = await httpJson(
@@ -662,106 +437,76 @@ async function ensureSubscription(
       );
       const sub = listData?.subscriptions?.[0];
       if (sub) {
-        const realExpiry = sub.expireTime
-          ? new Date(sub.expireTime).getTime() / 1000
-          : now + SUBSCRIPTION_TTL;
+        const realExpiry = sub.expireTime ? new Date(sub.expireTime).getTime() / 1e3 : now + SUBSCRIPTION_TTL;
         subscriptionState.subscriptions ??= {};
         subscriptionState.subscriptions[space] = {
           space,
           name: sub.name,
-          expiresAt: realExpiry,
+          expiresAt: realExpiry
         };
         saveSubState(subscriptionState);
         logger.info(`Found existing subscription ${sub.name} (expires ${sub.expireTime || "~4h"})`);
         return;
       }
-    } catch (e: any) {
+    } catch (e) {
       logger.warn(`Failed to list subscriptions for ${space}: ${e.message}`);
     }
-    // Fallback: use estimated TTL
     subscriptionState.subscriptions ??= {};
     subscriptionState.subscriptions[space] = {
       space,
-      expiresAt: now + SUBSCRIPTION_TTL,
+      expiresAt: now + SUBSCRIPTION_TTL
     };
     saveSubState(subscriptionState);
     return;
   }
-
   if (status >= 400) {
     logger.error(
       `Failed to create subscription for ${space}: ${status} ${JSON.stringify(data).slice(0, 300)}`
     );
     return;
   }
-
   subscriptionState.subscriptions ??= {};
   subscriptionState.subscriptions[space] = {
     space,
     name: data.name,
-    expiresAt: now + SUBSCRIPTION_TTL,
+    expiresAt: now + SUBSCRIPTION_TTL
   };
   saveSubState(subscriptionState);
   logger.info(
     `Workspace Events subscription created for ${space} (expires in ~4h)`
   );
 }
-
-async function checkAndRenewAll(): Promise<void> {
+async function checkAndRenewAll() {
   const token = await getOAuthToken();
   for (const space of targetSpaces) {
     try {
       await ensureSubscription(space, token);
-    } catch (e: any) {
+    } catch (e) {
       logger.error(`Subscription check failed for ${space}: ${e.message}`);
     }
   }
 }
-
-// ── Attachment downloader ────────────────────────────────────────────────────
-
-interface DownloadedAttachment {
-  localPath: string;
-  mimeType: string;
-  filename: string;
-}
-
-/**
- * Download Google Chat attachments via the Chat API media.download endpoint.
- * Files are saved to ~/.openclaw/media/inbound/ so OpenClaw picks them up as MediaUrls.
- */
-async function downloadAttachments(
-  attachments: any[],
-  oauthToken: string
-): Promise<DownloadedAttachment[]> {
+async function downloadAttachments(attachments, oauthToken) {
   if (!attachments || attachments.length === 0) return [];
-
   const stateDir = resolveStateDir();
   const mediaDir = join(stateDir, "media", "inbound");
   try {
     mkdirSync(mediaDir, { recursive: true });
-  } catch {}
-
-  const results: DownloadedAttachment[] = [];
-
+  } catch {
+  }
+  const results = [];
   for (const att of attachments) {
-    // media.download uses attachmentDataRef.resourceName (base64 resource token)
-    // att.name is for metadata GET only — returns 404 on media endpoint
-    const resourceName = att.attachmentDataRef?.resourceName as string | undefined;
-    const attachmentPath = resourceName || (att.name as string | undefined);
+    const resourceName = att.attachmentDataRef?.resourceName;
+    const attachmentPath = resourceName || att.name;
     if (!attachmentPath) {
-      logger.warn(`[attachment] No resourceName or att.name — skipping: ${JSON.stringify(att).slice(0, 200)}`);
+      logger.warn(`[attachment] No resourceName or att.name \u2014 skipping: ${JSON.stringify(att).slice(0, 200)}`);
       continue;
     }
-
-    const mimeType: string = att.contentType || "application/octet-stream";
-    // att.contentName is the original filename (e.g. "photo.jpg")
-    const originalName: string = att.contentName || attachmentPath.split("/").pop() || "attachment";
-
-    // Derive extension from original filename or mimeType
+    const mimeType = att.contentType || "application/octet-stream";
+    const originalName = att.contentName || attachmentPath.split("/").pop() || "attachment";
     let ext = extname(originalName);
     if (!ext) {
-      const mimeToExt: Record<string, string> = {
+      const mimeToExt = {
         "image/jpeg": ".jpg",
         "image/png": ".png",
         "image/gif": ".gif",
@@ -771,57 +516,45 @@ async function downloadAttachments(
         "text/csv": ".csv",
         "application/zip": ".zip",
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": ".xlsx",
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx"
       };
       ext = mimeToExt[mimeType] || ".bin";
     }
-
     const filename = `${randomUUID()}${ext}`;
     const localPath = join(mediaDir, filename);
-
     try {
-      // Chat API media download: GET /v1/media/{resourceName}?alt=media
-      // resourceName from attachmentDataRef is the correct token for media download
       const downloadUrl = `https://chat.googleapis.com/v1/media/${attachmentPath}?alt=media`;
-      logger.info(`[attachment] Downloading ${attachmentPath} → ${filename}`);
-
+      logger.info(`[attachment] Downloading ${attachmentPath} \u2192 ${filename}`);
       const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 30_000);
-      let resp: Response;
+      const timer = setTimeout(() => controller.abort(), 3e4);
+      let resp;
       try {
         resp = await fetch(downloadUrl, {
           method: "GET",
           headers: { Authorization: `Bearer ${oauthToken}` },
-          signal: controller.signal,
+          signal: controller.signal
         });
       } finally {
         clearTimeout(timer);
       }
-
       if (!resp.ok) {
         const errText = await resp.text().catch(() => "");
         logger.warn(`[attachment] Download failed (${resp.status}): ${errText.slice(0, 200)}`);
         continue;
       }
-
       const buffer = Buffer.from(await resp.arrayBuffer());
       const { writeFileSync: wfs } = await import("node:fs");
       wfs(localPath, buffer);
-      logger.info(`[attachment] Saved ${buffer.length} bytes → ${localPath}`);
+      logger.info(`[attachment] Saved ${buffer.length} bytes \u2192 ${localPath}`);
       results.push({ localPath, mimeType, filename });
-    } catch (err: any) {
+    } catch (err) {
       logger.error(`[attachment] Download error for ${attachmentPath}: ${err.message}`);
     }
   }
-
   return results;
 }
-
-// ── Attachment uploader (outbound) ───────────────────────────────────────────
-
-const MAX_UPLOAD_BYTES = 200 * 1024 * 1024; // Google Chat hard limit: 200 MB
-
-const EXT_TO_MIME: Record<string, string> = {
+var MAX_UPLOAD_BYTES = 200 * 1024 * 1024;
+var EXT_TO_MIME = {
   ".png": "image/png",
   ".jpg": "image/jpeg",
   ".jpeg": "image/jpeg",
@@ -846,34 +579,18 @@ const EXT_TO_MIME: Record<string, string> = {
   ".xls": "application/vnd.ms-excel",
   ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
   ".ppt": "application/vnd.ms-powerpoint",
-  ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation"
 };
-
-function guessMimeType(filename: string): string {
+function guessMimeType(filename) {
   return EXT_TO_MIME[extname(filename).toLowerCase()] || "application/octet-stream";
 }
-
-interface ResolvedMedia {
-  buffer: Buffer;
-  filename: string;
-  mimeType: string;
-}
-
-/**
- * Resolve one outbound media reference (local path, file:// URL, or http(s) URL)
- * into an in-memory buffer plus filename/MIME metadata.
- */
-async function resolveOutboundMedia(
-  ref: string,
-  opts: { readFile?: (p: string) => Promise<Buffer> } = {}
-): Promise<ResolvedMedia> {
+async function resolveOutboundMedia(ref, opts = {}) {
   const trimmed = String(ref || "").trim();
   if (!trimmed) throw new Error("Empty media reference");
-
   if (/^https?:\/\//i.test(trimmed)) {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 60_000);
-    let resp: Response;
+    const timer = setTimeout(() => controller.abort(), 6e4);
+    let resp;
     try {
       resp = await fetch(trimmed, { signal: controller.signal });
     } finally {
@@ -882,52 +599,33 @@ async function resolveOutboundMedia(
     if (!resp.ok) {
       throw new Error(`Fetch media failed (${resp.status}) for ${trimmed}`);
     }
-    const buffer = Buffer.from(await resp.arrayBuffer());
-    let filename = "";
+    const buffer2 = Buffer.from(await resp.arrayBuffer());
+    let filename2 = "";
     const disposition = resp.headers.get("content-disposition") || "";
     const match = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(disposition);
-    if (match) filename = decodeURIComponent(match[1]);
-    if (!filename) {
+    if (match) filename2 = decodeURIComponent(match[1]);
+    if (!filename2) {
       try {
-        filename = decodeURIComponent(new URL(trimmed).pathname.split("/").pop() || "");
-      } catch {}
+        filename2 = decodeURIComponent(new URL(trimmed).pathname.split("/").pop() || "");
+      } catch {
+      }
     }
-    if (!filename) filename = "attachment";
+    if (!filename2) filename2 = "attachment";
     const headerMime = (resp.headers.get("content-type") || "").split(";")[0].trim();
-    const mimeType = headerMime || guessMimeType(filename);
-    if (!extname(filename)) {
+    const mimeType = headerMime || guessMimeType(filename2);
+    if (!extname(filename2)) {
       const ext = Object.entries(EXT_TO_MIME).find(([, m]) => m === mimeType)?.[0];
-      if (ext) filename += ext;
+      if (ext) filename2 += ext;
     }
-    return { buffer, filename, mimeType };
+    return { buffer: buffer2, filename: filename2, mimeType };
   }
-
-  const localPath = trimmed.startsWith("file://")
-    ? decodeURIComponent(new URL(trimmed).pathname)
-    : resolve(trimmed);
-
-  const buffer = opts.readFile
-    ? await opts.readFile(localPath)
-    : readFileSync(localPath);
+  const localPath = trimmed.startsWith("file://") ? decodeURIComponent(new URL(trimmed).pathname) : resolve(trimmed);
+  const buffer = opts.readFile ? await opts.readFile(localPath) : readFileSync(localPath);
   const filename = localPath.split("/").pop() || "attachment";
   return { buffer, filename, mimeType: guessMimeType(filename) };
 }
-
-/**
- * Upload one file to a Google Chat space via the media.upload endpoint and
- * return the short-lived attachmentUploadToken used when creating a message.
- *
- * Uses multipart/related (Google's standard uploadType=multipart protocol):
- * a JSON metadata part followed by the raw file bytes.
- */
-async function uploadAttachment(params: {
-  space: string;
-  media: ResolvedMedia;
-  token: string;
-  timeoutMs?: number;
-}): Promise<string> {
-  const { space, media, token, timeoutMs = 120_000 } = params;
-
+async function uploadAttachment(params) {
+  const { space, media, token, timeoutMs = 12e4 } = params;
   if (media.buffer.length === 0) {
     throw new Error(`Refusing to upload empty file: ${media.filename}`);
   }
@@ -936,42 +634,44 @@ async function uploadAttachment(params: {
       `File ${media.filename} is ${(media.buffer.length / 1024 / 1024).toFixed(1)} MB, over the Google Chat 200 MB limit`
     );
   }
-
   const boundary = `openclaw-${randomUUID()}`;
   const head = Buffer.from(
-    `--${boundary}\r\n` +
-      `Content-Type: application/json; charset=UTF-8\r\n\r\n` +
-      `${JSON.stringify({ filename: media.filename })}\r\n` +
-      `--${boundary}\r\n` +
-      `Content-Type: ${media.mimeType}\r\n\r\n`,
+    `--${boundary}\r
+Content-Type: application/json; charset=UTF-8\r
+\r
+${JSON.stringify({ filename: media.filename })}\r
+--${boundary}\r
+Content-Type: ${media.mimeType}\r
+\r
+`,
     "utf8"
   );
-  const tail = Buffer.from(`\r\n--${boundary}--\r\n`, "utf8");
+  const tail = Buffer.from(`\r
+--${boundary}--\r
+`, "utf8");
   const body = Buffer.concat([head, media.buffer, tail]);
-
   const url = `https://chat.googleapis.com/upload/v1/${space}/attachments:upload?uploadType=multipart`;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
-  let resp: Response;
+  let resp;
   try {
     resp = await fetch(url, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${token}`,
-        "Content-Type": `multipart/related; boundary=${boundary}`,
+        "Content-Type": `multipart/related; boundary=${boundary}`
       },
       body,
-      signal: controller.signal,
+      signal: controller.signal
     });
   } finally {
     clearTimeout(timer);
   }
-
   const text = await resp.text();
   if (!resp.ok) {
     throw new Error(`Attachment upload failed (${resp.status}): ${text.slice(0, 300)}`);
   }
-  let data: any;
+  let data;
   try {
     data = JSON.parse(text);
   } catch {
@@ -982,30 +682,11 @@ async function uploadAttachment(params: {
     throw new Error(`Attachment upload missing attachmentUploadToken: ${text.slice(0, 200)}`);
   }
   logger.info(
-    `[upload] ${media.filename} (${media.mimeType}, ${media.buffer.length} bytes) → token acquired`
+    `[upload] ${media.filename} (${media.mimeType}, ${media.buffer.length} bytes) \u2192 token acquired`
   );
   return uploadToken;
 }
-
-/**
- * Upload media refs and post one Chat message carrying them as attachments.
- * Google Chat accepts at most one attachment per message, so multiple refs are
- * sent as a sequence; the caption rides on the first message only.
- *
- * NOTE: `attachments:upload` requires USER authentication. Google rejects
- * service-account/app auth there with ACCESS_TOKEN_SCOPE_INSUFFICIENT, and the
- * returned upload token is bound to the uploading user — so the message that
- * carries it is created with that same OAuth credential.
- */
-async function sendMediaMessages(params: {
-  space: string;
-  mediaRefs: string[];
-  token: string;
-  text?: string;
-  threadName?: string;
-  replyMessageOption?: string;
-  readFile?: (p: string) => Promise<Buffer>;
-}): Promise<{ sent: number; failed: string[]; messageIds: string[] }> {
+async function sendMediaMessages(params) {
   const {
     space,
     mediaRefs,
@@ -1013,21 +694,18 @@ async function sendMediaMessages(params: {
     text,
     threadName,
     replyMessageOption = "REPLY_MESSAGE_FALLBACK_TO_NEW_THREAD",
-    readFile,
+    readFile
   } = params;
-
-  const failed: string[] = [];
-  const messageIds: string[] = [];
+  const failed = [];
+  const messageIds = [];
   let sent = 0;
   let captionPending = text?.trim() || "";
-
   for (const ref of mediaRefs) {
     try {
       const media = await resolveOutboundMedia(ref, { readFile });
       const uploadToken = await uploadAttachment({ space, media, token });
-
-      const msgBody: any = {
-        attachment: [{ attachmentDataRef: { attachmentUploadToken: uploadToken } }],
+      const msgBody = {
+        attachment: [{ attachmentDataRef: { attachmentUploadToken: uploadToken } }]
       };
       if (captionPending) {
         msgBody.text = captionPending;
@@ -1037,12 +715,11 @@ async function sendMediaMessages(params: {
         msgBody.thread = { name: threadName };
         url += `?messageReplyOption=${replyMessageOption}`;
       }
-
       const { status, data } = await httpJson(url, {
         method: "POST",
         headers: { Authorization: `Bearer ${token}` },
         body: msgBody,
-        timeoutMs: 60_000,
+        timeoutMs: 6e4
       });
       if (status >= 400) {
         throw new Error(`Message create failed (${status}): ${JSON.stringify(data).slice(0, 300)}`);
@@ -1050,22 +727,16 @@ async function sendMediaMessages(params: {
       captionPending = "";
       sent++;
       if (data?.name) messageIds.push(data.name);
-      // This message was posted with the USER OAuth credential, so Google will
-      // republish it over Pub/Sub typed HUMAN. Register it before that can
-      // happen so the echo is dropped even if selfUserId is not resolved yet.
       markProcessed(data?.name);
       rememberSelfIdentity(data);
-      logger.info(`[upload] Sent attachment ${media.filename} → ${space}`);
-    } catch (err: any) {
+      logger.info(`[upload] Sent attachment ${media.filename} \u2192 ${space}`);
+    } catch (err) {
       logger.error(`[upload] Failed for ${ref}: ${err.message}`);
       failed.push(`${ref}: ${err.message}`);
     }
   }
-
-  // Caption survives when every upload failed — deliver it as plain text so the
-  // agent's words are never silently dropped.
   if (captionPending && sent === 0) {
-    const msgBody: any = { text: captionPending };
+    const msgBody = { text: captionPending };
     let url = `https://chat.googleapis.com/v1/${space}/messages`;
     if (threadName) {
       msgBody.thread = { name: threadName };
@@ -1074,36 +745,16 @@ async function sendMediaMessages(params: {
     await httpJson(url, {
       method: "POST",
       headers: { Authorization: `Bearer ${token}` },
-      body: msgBody,
-    })
-      .then(({ data }) => {
-        // Also user-auth'd, so it echoes back typed HUMAN like the uploads.
-        markProcessed(data?.name);
-        rememberSelfIdentity(data);
-      })
-      .catch(() => {});
+      body: msgBody
+    }).then(({ data }) => {
+      markProcessed(data?.name);
+      rememberSelfIdentity(data);
+    }).catch(() => {
+    });
   }
-
   return { sent, failed, messageIds };
 }
-
-// ── In-process message pipeline ─────────────────────────────────────────────
-
-async function processMessageInPipeline(params: {
-  agentId: string;
-  space: string;
-  spaceDisplayName: string;
-  senderId: string;
-  senderName: string;
-  text: string;
-  messageName: string;
-  threadName: string;
-  eventTime?: string;
-  replyInThread: boolean;
-  threadSessionIsolation: boolean;
-  attachmentPaths?: string[];
-  crossDispatchChainKey?: string;
-}): Promise<void> {
+async function processMessageInPipeline(params) {
   const {
     agentId,
     space,
@@ -1117,60 +768,34 @@ async function processMessageInPipeline(params: {
     replyInThread,
     threadSessionIsolation,
     attachmentPaths = [],
-    crossDispatchChainKey,
+    crossDispatchChainKey
   } = params;
-
-  // Cross-dispatch chain key: groups all dispatches from the same originating message
   const chainKey = crossDispatchChainKey || `${threadName || space}:${messageName}:${Date.now()}`;
-  // Collect all delivered text for cross-dispatch scanning
-  const deliveredChunks: string[] = [];
-
+  const deliveredChunks = [];
   const api = pluginApi;
   const cfg = api.config;
   const runtime = api.runtime;
-
-  // 1) Resolve route + build envelope — creates proper session key
-  //    Uses agentId as accountId so bindings resolve to the correct agent
-  //    Thread-isolated: agent:{agentId}:googlechatpubsub:{agentId}:group:spaces/...:thread:...
-  //    Space-scoped:    agent:{agentId}:googlechatpubsub:{agentId}:group:spaces/...
-
-  // Determine the effective thread ID for this message
   const effectiveThreadId = threadName || "";
-
-  // Determine peer ID — if thread isolation is on and we have a thread, include it in peer ID
-  const peerId = threadSessionIsolation && effectiveThreadId
-    ? `${space}:thread:${effectiveThreadId.split("/").pop()}`
-    : space;
-
-  // Use agentId as accountId — bindings in openclaw.json map
-  // { channel: "googlechatpubsub", accountId: "main" } → agentId: "main"
-  // { channel: "googlechatpubsub", accountId: "rd" } → agentId: "rd"
-  // { channel: "googlechatpubsub", accountId: "ca_hc" } → agentId: "ca_hc"
+  const peerId = threadSessionIsolation && effectiveThreadId ? `${space}:thread:${effectiveThreadId.split("/").pop()}` : space;
   const { route, buildEnvelope } = resolveInboundRouteEnvelopeBuilderWithRuntime({
     cfg,
     channel: "googlechatpubsub",
     accountId: agentId,
     peer: {
-      kind: "group" as const,
-      id: peerId,
+      kind: "group",
+      id: peerId
     },
     runtime: runtime.channel,
-    sessionStore: cfg.session?.store,
+    sessionStore: cfg.session?.store
   });
-
-  logger.info(`🔑 Session key: ${route.sessionKey} (agent=${agentId}, threadIsolation=${threadSessionIsolation}, thread=${effectiveThreadId || 'none'})`);
-
+  logger.info(`\u{1F511} Session key: ${route.sessionKey} (agent=${agentId}, threadIsolation=${threadSessionIsolation}, thread=${effectiveThreadId || "none"})`);
   const fromLabel = spaceDisplayName || `space:${space}`;
   const { storePath, body } = buildEnvelope({
     channel: "Google Chat",
     from: fromLabel,
-    timestamp: eventTime ? Date.parse(eventTime) : undefined,
-    body: text,
+    timestamp: eventTime ? Date.parse(eventTime) : void 0,
+    body: text
   });
-
-  // 2) Build inbound context payload (same structure as stock googlechat)
-  // Use MediaPaths (not MediaUrls) for local files — normalizeAttachments sets path: void 0
-  // when only MediaUrls is provided, treating them as remote URLs to fetch instead of local paths.
   const ctxPayload = runtime.channel.reply.finalizeInboundContext({
     Body: body,
     BodyForAgent: text,
@@ -1182,7 +807,7 @@ async function processMessageInPipeline(params: {
     AccountId: agentId,
     ChatType: "channel",
     ConversationLabel: fromLabel,
-    SenderName: senderName || undefined,
+    SenderName: senderName || void 0,
     SenderId: senderId,
     WasMentioned: false,
     CommandAuthorized: true,
@@ -1190,168 +815,123 @@ async function processMessageInPipeline(params: {
     Surface: "googlechat",
     MessageSid: messageName,
     MessageSidFull: messageName,
-    ReplyToId: threadName || undefined,
-    ReplyToIdFull: threadName || undefined,
-    GroupSpace: spaceDisplayName || undefined,
+    ReplyToId: threadName || void 0,
+    ReplyToIdFull: threadName || void 0,
+    GroupSpace: spaceDisplayName || void 0,
     OriginatingChannel: "googlechatpubsub",
     OriginatingTo: `googlechatpubsub:${space}`,
-    ...(attachmentPaths.length > 0 && {
-      MediaPaths: attachmentPaths,          // local file paths → sets path: value in normalizeAttachments
-      MediaUrls: attachmentPaths,           // also set for compat/dedup logic
-    }),
+    ...attachmentPaths.length > 0 && {
+      MediaPaths: attachmentPaths,
+      // local file paths → sets path: value in normalizeAttachments
+      MediaUrls: attachmentPaths
+      // also set for compat/dedup logic
+    }
   });
-
-  // 3) Record session meta — makes session visible in /session
-  void runtime.channel.session
-    .recordSessionMetaFromInbound({
-      storePath,
-      sessionKey: ctxPayload.SessionKey ?? route.sessionKey,
-      ctx: ctxPayload,
-    })
-    .catch((err: any) => {
-      logger.error(
-        `googlechatpubsub: failed updating session meta: ${String(err)}`
-      );
-    });
-
-  // 4) Determine reply thread target
-  //    replyInThread=true + no existing thread → create new thread on the original message
-  //    replyInThread=true + existing thread → reply in that thread
-  //    replyInThread=false → reply in main window (use thread only if message was already in one)
-  let replyThreadName = threadName; // default: follow the incoming message's thread
+  void runtime.channel.session.recordSessionMetaFromInbound({
+    storePath,
+    sessionKey: ctxPayload.SessionKey ?? route.sessionKey,
+    ctx: ctxPayload
+  }).catch((err) => {
+    logger.error(
+      `googlechatpubsub: failed updating session meta: ${String(err)}`
+    );
+  });
+  let replyThreadName = threadName;
   let replyMessageOption = "REPLY_MESSAGE_FALLBACK_TO_NEW_THREAD";
-
   if (replyInThread) {
     if (!threadName) {
-      // Message in main window, replyInThread=true → start new thread on original message
-      // Google Chat: set thread.name = spaces/xxx/threads/xxx where thread ID = message ID portion
-      // Actually: to start a thread on a message, use the message's thread name from the API
-      // The Chat API will auto-create a thread when we reply with messageReplyOption=REPLY_MESSAGE_FALLBACK_TO_NEW_THREAD
-      // and thread = { name: <original message's thread.name> }
-      // In Google Chat, every message has a thread — even in "flat" conversations
-      // We use the original message name to target the thread
       replyThreadName = messageName ? `${space}/threads/${messageName.split("/").pop()}` : "";
       replyMessageOption = "REPLY_MESSAGE_FALLBACK_TO_NEW_THREAD";
-      logger.info(`🧵 replyInThread: creating new thread on message ${messageName}`);
+      logger.info(`\u{1F9F5} replyInThread: creating new thread on message ${messageName}`);
     } else {
-      // Already in a thread, stay there
       replyMessageOption = "REPLY_MESSAGE_OR_FAIL";
-      logger.info(`🧵 replyInThread: continuing in existing thread ${threadName}`);
+      logger.info(`\u{1F9F5} replyInThread: continuing in existing thread ${threadName}`);
     }
   }
-
-  // 5) Typing indicator (skipped when silentReply is true)
-  //    silentReply=true (default): no typing message posted — reply sent directly as a new POST
-  //    silentReply=false: legacy behaviour — post "_typing..._" then PATCH with the reply
-  const silentReply = config.silentReply !== false; // default true
-  let typingMessageName: string | undefined;
+  const silentReply = config.silentReply !== false;
+  let typingMessageName;
   if (!silentReply) {
     try {
       const botToken = await getBotToken();
-      const typingBody: any = { text: "_typing..._" };
+      const typingBody = { text: "_typing..._" };
       if (replyInThread && replyThreadName) {
         typingBody.thread = { name: replyThreadName };
       } else if (threadName) {
         typingBody.thread = { name: threadName };
       }
-      const typingUrl = replyInThread && replyThreadName
-        ? `https://chat.googleapis.com/v1/${space}/messages?messageReplyOption=${replyMessageOption}`
-        : `https://chat.googleapis.com/v1/${space}/messages`;
-
-      logger.info(`⏳ Sending typing indicator to ${space} (thread: ${replyThreadName || threadName || 'none'}, replyInThread: ${replyInThread})`);
+      const typingUrl = replyInThread && replyThreadName ? `https://chat.googleapis.com/v1/${space}/messages?messageReplyOption=${replyMessageOption}` : `https://chat.googleapis.com/v1/${space}/messages`;
+      logger.info(`\u23F3 Sending typing indicator to ${space} (thread: ${replyThreadName || threadName || "none"}, replyInThread: ${replyInThread})`);
       const result = await httpJson(typingUrl, {
         method: "POST",
         headers: { Authorization: `Bearer ${botToken}` },
-        body: typingBody,
+        body: typingBody
       });
-      logger.info(`⏳ Typing indicator result: status=${result.status} name=${result.data?.name || 'none'}`);
+      logger.info(`\u23F3 Typing indicator result: status=${result.status} name=${result.data?.name || "none"}`);
       if (result.status < 400 && result.data?.name) {
         typingMessageName = result.data.name;
-        // Capture the actual thread name from the response (important for new threads)
         if (result.data?.thread?.name && !replyThreadName) {
           replyThreadName = result.data.thread.name;
         }
       } else {
         logger.warn(`Typing indicator failed: ${result.status} ${JSON.stringify(result.data).slice(0, 200)}`);
       }
-    } catch (err: any) {
+    } catch (err) {
       logger.warn(`Typing indicator exception: ${err.message}`);
     }
   } else {
-    logger.info(`🔇 silentReply=true — skipping typing indicator`);
+    logger.info(`\u{1F507} silentReply=true \u2014 skipping typing indicator`);
   }
-
-  // 6) Dispatch reply through the OpenClaw agent pipeline
   const { onModelSelected, ...prefixOptions } = createReplyPrefixOptions({
     cfg,
     agentId: route.agentId,
     channel: "googlechatpubsub",
-    accountId: agentId,
+    accountId: agentId
   });
-
   await runtime.channel.reply.dispatchReplyWithBufferedBlockDispatcher({
     ctx: ctxPayload,
     cfg,
     dispatcherOptions: {
       ...prefixOptions,
-      deliver: async (payload: {
-        text?: string;
-        mediaUrls?: string[];
-        mediaUrl?: string;
-        replyToId?: string;
-      }, info?: any) => {
-        logger.info(`📤 deliver called! kind=${info?.kind || '?'} text=${(payload.text || '').slice(0, 100)} mediaUrls=${payload.mediaUrls?.length || 0}`);
+      deliver: async (payload, info) => {
+        logger.info(`\u{1F4E4} deliver called! kind=${info?.kind || "?"} text=${(payload.text || "").slice(0, 100)} mediaUrls=${payload.mediaUrls?.length || 0}`);
         const botToken = await getBotToken();
         const replyText = payload.text?.trim();
-
-        // Collect media refs from either payload shape.
         const mediaRefs = [
-          ...(payload.mediaUrls || []),
-          ...(payload.mediaUrl ? [payload.mediaUrl] : []),
-        ].filter((m): m is string => Boolean(m && String(m).trim()));
+          ...payload.mediaUrls || [],
+          ...payload.mediaUrl ? [payload.mediaUrl] : []
+        ].filter((m) => Boolean(m && String(m).trim()));
         const uniqueMediaRefs = [...new Set(mediaRefs)];
-
         if (uniqueMediaRefs.length > 0) {
-          // Media path: attachments carry the text as the first message's caption.
           const effectiveThread = replyInThread ? replyThreadName : threadName;
-
-          // Retire the typing placeholder first so the attachment is not orphaned behind it.
           if (typingMessageName) {
             await httpJson(`https://chat.googleapis.com/v1/${typingMessageName}`, {
               method: "DELETE",
-              headers: { Authorization: `Bearer ${botToken}` },
-            }).catch(() => {});
-            typingMessageName = undefined;
+              headers: { Authorization: `Bearer ${botToken}` }
+            }).catch(() => {
+            });
+            typingMessageName = void 0;
           }
-
           if (replyText) deliveredChunks.push(replyText);
-
           const result = await sendMediaMessages({
             space,
             mediaRefs: uniqueMediaRefs,
             token: await getOAuthToken(),
             text: replyText,
             threadName: effectiveThread,
-            replyMessageOption,
+            replyMessageOption
           });
           logger.info(
-            `📎 Media delivery: ${result.sent}/${uniqueMediaRefs.length} sent` +
-              (result.failed.length ? ` | failures: ${result.failed.join("; ").slice(0, 300)}` : "")
+            `\u{1F4CE} Media delivery: ${result.sent}/${uniqueMediaRefs.length} sent` + (result.failed.length ? ` | failures: ${result.failed.join("; ").slice(0, 300)}` : "")
           );
           return;
         }
-
         if (!replyText) return;
-
-        // Track delivered text for cross-agent dispatch
         deliveredChunks.push(replyText);
-
-        const chunkLimit = 4000;
-        const chunks: string[] = [];
+        const chunkLimit = 4e3;
+        const chunks = [];
         if (replyText.length <= chunkLimit) {
           chunks.push(replyText);
         } else {
-          // Simple chunking by newlines
           let remaining = replyText;
           while (remaining.length > 0) {
             if (remaining.length <= chunkLimit) {
@@ -1364,25 +944,22 @@ async function processMessageInPipeline(params: {
             remaining = remaining.slice(cut).trimStart();
           }
         }
-
         for (let i = 0; i < chunks.length; i++) {
           const chunk = chunks[i];
           try {
             if (i === 0 && typingMessageName) {
-              // Edit typing indicator with first chunk
-              logger.info(`📝 PATCHing typing message: ${typingMessageName}`);
+              logger.info(`\u{1F4DD} PATCHing typing message: ${typingMessageName}`);
               const patchResult = await httpJson(
                 `https://chat.googleapis.com/v1/${typingMessageName}?updateMask=text`,
                 {
                   method: "PATCH",
                   headers: { Authorization: `Bearer ${botToken}` },
-                  body: { text: chunk },
+                  body: { text: chunk }
                 }
               );
               if (patchResult.status >= 400) {
                 logger.warn(`PATCH failed (${patchResult.status}), falling back to POST: ${JSON.stringify(patchResult.data).slice(0, 200)}`);
-                // Fallback: send as new message
-                const msgBody: any = { text: chunk };
+                const msgBody = { text: chunk };
                 let url = `https://chat.googleapis.com/v1/${space}/messages`;
                 const effectiveThread = replyInThread ? replyThreadName : threadName;
                 if (effectiveThread) {
@@ -1392,15 +969,15 @@ async function processMessageInPipeline(params: {
                 const postResult = await httpJson(url, {
                   method: "POST",
                   headers: { Authorization: `Bearer ${botToken}` },
-                  body: msgBody,
+                  body: msgBody
                 });
                 logger.info(`POST fallback result: ${postResult.status}`);
               } else {
-                logger.info(`✅ PATCH succeeded`);
+                logger.info(`\u2705 PATCH succeeded`);
               }
-              typingMessageName = undefined;
+              typingMessageName = void 0;
             } else {
-              const msgBody: any = { text: chunk };
+              const msgBody = { text: chunk };
               let url = `https://chat.googleapis.com/v1/${space}/messages`;
               const effectiveThread = replyInThread ? replyThreadName : threadName;
               if (effectiveThread) {
@@ -1410,65 +987,56 @@ async function processMessageInPipeline(params: {
               const postResult = await httpJson(url, {
                 method: "POST",
                 headers: { Authorization: `Bearer ${botToken}` },
-                body: msgBody,
+                body: msgBody
               });
-              logger.info(`📨 POST result: ${postResult.status}`);
+              logger.info(`\u{1F4E8} POST result: ${postResult.status}`);
             }
-          } catch (err: any) {
+          } catch (err) {
             logger.error(`Chat API reply failed: ${err.message}`);
           }
         }
       },
-      onSkip: (payload: any, info: any) => {
-        logger.warn(`⏭️ Reply skipped: kind=${info?.kind} reason=${info?.reason} text=${(payload?.text || '').slice(0, 100)}`);
+      onSkip: (payload, info) => {
+        logger.warn(`\u23ED\uFE0F Reply skipped: kind=${info?.kind} reason=${info?.reason} text=${(payload?.text || "").slice(0, 100)}`);
       },
       onHeartbeatStrip: () => {
-        logger.info(`💓 Heartbeat strip triggered`);
+        logger.info(`\u{1F493} Heartbeat strip triggered`);
       },
-      onError: (err: any, info: any) => {
+      onError: (err, info) => {
         logger.error(
           `googlechatpubsub reply ${info?.kind || "?"} failed: ${String(err)}`
         );
-        // Clean up typing indicator on error
         if (typingMessageName) {
-          getBotToken()
-            .then((t) =>
-              httpJson(
-                `https://chat.googleapis.com/v1/${typingMessageName}`,
-                {
-                  method: "DELETE",
-                  headers: { Authorization: `Bearer ${t}` },
-                }
-              )
+          getBotToken().then(
+            (t) => httpJson(
+              `https://chat.googleapis.com/v1/${typingMessageName}`,
+              {
+                method: "DELETE",
+                headers: { Authorization: `Bearer ${t}` }
+              }
             )
-            .catch(() => {});
+          ).catch(() => {
+          });
         }
-      },
+      }
     },
     replyOptions: {
-      onModelSelected,
-    },
+      onModelSelected
+    }
   });
-
-  // Clean up orphaned typing indicator (e.g. agent replied NO_REPLY / silent skip)
-  // If deliver was called, typingMessageName was set to undefined inside deliver.
-  // If we get here and it's still set, no delivery happened — delete the stale message.
   if (typingMessageName) {
-    logger.info(`🧹 Cleaning up orphaned typing message: ${typingMessageName}`);
+    logger.info(`\u{1F9F9} Cleaning up orphaned typing message: ${typingMessageName}`);
     try {
       const cleanupToken = await getBotToken();
       await httpJson(`https://chat.googleapis.com/v1/${typingMessageName}`, {
         method: "DELETE",
-        headers: { Authorization: `Bearer ${cleanupToken}` },
+        headers: { Authorization: `Bearer ${cleanupToken}` }
       });
-      logger.info(`✅ Orphaned typing message deleted`);
-    } catch (err: any) {
+      logger.info(`\u2705 Orphaned typing message deleted`);
+    } catch (err) {
       logger.error(`Failed to delete orphaned typing message: ${err.message}`);
     }
   }
-
-  // 7) Cross-agent dispatch: scan delivered text for mentions of other agents
-  //    Only runs when config.crossAgentDispatch === true
   if (config.crossAgentDispatch && deliveredChunks.length > 0) {
     const fullReply = deliveredChunks.join("\n");
     try {
@@ -1482,147 +1050,101 @@ async function processMessageInPipeline(params: {
         threadName: threadName || "",
         replyInThread,
         threadSessionIsolation,
-        chainKey,
+        chainKey
       });
-    } catch (err: any) {
+    } catch (err) {
       logger.error(`Cross-agent dispatch error: ${err.message}`);
     }
   }
 }
-
-// ── Chat API reaction ───────────────────────────────────────────────────────
-
-async function sendReaction(
-  oauthToken: string,
-  messageName: string,
-  emoji: string = "⏳"
-): Promise<string | undefined> {
+async function sendReaction(oauthToken, messageName, emoji = "\u23F3") {
   const url = `https://chat.googleapis.com/v1/${messageName}/reactions`;
   const { status, data } = await httpJson(url, {
     method: "POST",
     headers: { Authorization: `Bearer ${oauthToken}` },
-    body: { emoji: { unicode: emoji } },
+    body: { emoji: { unicode: emoji } }
   });
-
   if (status >= 400) {
     logger.warn(
       `Reaction failed (${status}): ${JSON.stringify(data).slice(0, 300)}`
     );
-    return undefined;
+    return void 0;
   } else {
-    logger.info(`⏳ Reacted to ${messageName} (reaction: ${data?.name})`);
-    return data?.name as string | undefined;
+    logger.info(`\u23F3 Reacted to ${messageName} (reaction: ${data?.name})`);
+    return data?.name;
   }
 }
-
-// ── Poll loop ───────────────────────────────────────────────────────────────
-
-async function pollOnce(): Promise<void> {
+async function pollOnce() {
   try {
-    // Periodic renewal
     if (Date.now() - lastRenewalCheck > RENEWAL_INTERVAL) {
       await checkAndRenewAll();
       lastRenewalCheck = Date.now();
     }
-
     const oauthToken = await getOAuthToken();
-
     const messages = await pullMessages(oauthToken);
     if (!messages.length) return;
-
     logger.info(`Pulled ${messages.length} message(s)`);
-
-    // Ack immediately to prevent redelivery
     await ackMessages(
       oauthToken,
-      messages.map((m: any) => m.ackId)
+      messages.map((m) => m.ackId)
     );
-
     for (const msg of messages) {
       const raw = msg.message?.data;
       if (!raw) continue;
-
-      let data: any;
+      let data;
       try {
         data = JSON.parse(Buffer.from(raw, "base64").toString());
       } catch {
         continue;
       }
-
       const chatMsg = data.message;
       if (!chatMsg) continue;
-
-      // Dedup
       const msgName = chatMsg.name || "";
       if (msgName && processedMsgIds.has(msgName)) continue;
-
       const sender = chatMsg.sender || {};
       if (sender.type !== "HUMAN") continue;
-
-      // Messages this plugin posted via the user OAuth credential (every
-      // attachment upload) come back typed HUMAN. Without this guard they are
-      // re-ingested as inbound and trigger a fresh agent run — a self-echo loop.
       if (isSelfMessage(sender)) {
         markProcessed(msgName);
         continue;
       }
-
       const space = chatMsg.space?.name || "";
       if (!targetSpaces.has(space)) continue;
-
       const text = (chatMsg.text || "").trim();
-      // Google Chat Pub/Sub uses "attachment" (singular array), not "attachments"
-      const rawAttachments: any[] = chatMsg.attachment || chatMsg.attachments || [];
-      // Require either text or attachments — skip empty messages
+      const rawAttachments = chatMsg.attachment || chatMsg.attachments || [];
       if (!text && rawAttachments.length === 0) continue;
-
       const displayName = sender.displayName || sender.name || "?";
-      logger.info(`📩 [${space}] ${displayName}: ${text.slice(0, 120)}${rawAttachments.length ? ` [${rawAttachments.length} attachment(s)]` : ""}`);
-
-      // For attachment-only messages with no text, use alwaysListen agents only
-      const matched = text
-        ? routeMessage(text, space)
-        : (() => {
-            const entry = routingTable.get(space);
-            return entry ? [...entry.alwaysListen] : [];
-          })();
-
+      logger.info(`\u{1F4E9} [${space}] ${displayName}: ${text.slice(0, 120)}${rawAttachments.length ? ` [${rawAttachments.length} attachment(s)]` : ""}`);
+      const matched = text ? routeMessage(text, space) : (() => {
+        const entry = routingTable.get(space);
+        return entry ? [...entry.alwaysListen] : [];
+      })();
       if (!matched.length) {
         markProcessed(msgName);
         continue;
       }
-
-      // Get space-level threading config
       const routingEntry = routingTable.get(space);
       const spaceReplyInThread = routingEntry?.replyInThread ?? false;
       const spaceThreadIsolation = routingEntry?.threadSessionIsolation ?? spaceReplyInThread;
-
-      // React with ⏳ to acknowledge receipt (stored so we can remove it after reply)
-      let pendingReactionName: string | undefined;
+      let pendingReactionName;
       if (msgName) {
-        pendingReactionName = await sendReaction(oauthToken, msgName).catch(() => undefined);
+        pendingReactionName = await sendReaction(oauthToken, msgName).catch(() => void 0);
       }
-
-      // Download attachments (if any) before dispatching to agents
-      let downloadedPaths: string[] = [];
+      let downloadedPaths = [];
       if (rawAttachments.length > 0) {
         try {
-          // media.download requires OAuth token (service account JWT returns 403)
           const downloaded = await downloadAttachments(rawAttachments, oauthToken);
           downloadedPaths = downloaded.map((d) => d.localPath);
           if (downloadedPaths.length > 0) {
-            logger.info(`📎 Downloaded ${downloadedPaths.length}/${rawAttachments.length} attachment(s)`);
+            logger.info(`\u{1F4CE} Downloaded ${downloadedPaths.length}/${rawAttachments.length} attachment(s)`);
           }
-        } catch (err: any) {
+        } catch (err) {
           logger.error(`Attachment download error: ${err.message}`);
         }
       }
-
-      // Dispatch to each matched agent (with queue support for busy sessions)
-      const dispatchPromises: Promise<void>[] = [];
+      const dispatchPromises = [];
       for (const agent of matched) {
         logger.info(
-          `🤖 [${agent.agentId}] Dispatching for ${space} (replyInThread=${spaceReplyInThread}, threadIsolation=${spaceThreadIsolation})`
+          `\u{1F916} [${agent.agentId}] Dispatching for ${space} (replyInThread=${spaceReplyInThread}, threadIsolation=${spaceThreadIsolation})`
         );
         dispatchPromises.push(
           dispatchOrQueue({
@@ -1637,47 +1159,36 @@ async function pollOnce(): Promise<void> {
             eventTime: data.eventTime || chatMsg.createTime,
             replyInThread: spaceReplyInThread,
             threadSessionIsolation: spaceThreadIsolation,
-            attachmentPaths: downloadedPaths,
+            attachmentPaths: downloadedPaths
           })
         );
       }
-      // Wait for all dispatches (some may return instantly if queued)
       await Promise.all(dispatchPromises);
-
-      // Remove the ⏳ reaction now that the agent has finished replying
       if (pendingReactionName) {
         try {
           const reactionToken = await getOAuthToken();
           await httpJson(`https://chat.googleapis.com/v1/${pendingReactionName}`, {
             method: "DELETE",
-            headers: { Authorization: `Bearer ${reactionToken}` },
+            headers: { Authorization: `Bearer ${reactionToken}` }
           });
-          logger.info(`🧹 Removed ⏳ reaction: ${pendingReactionName}`);
-        } catch (err: any) {
-          logger.warn(`Failed to remove ⏳ reaction: ${err.message}`);
+          logger.info(`\u{1F9F9} Removed \u23F3 reaction: ${pendingReactionName}`);
+        } catch (err) {
+          logger.warn(`Failed to remove \u23F3 reaction: ${err.message}`);
         }
-        pendingReactionName = undefined;
+        pendingReactionName = void 0;
       }
-
       markProcessed(msgName);
     }
-  } catch (e: any) {
+  } catch (e) {
     logger.error(`Poll error: ${e.message}`);
-    if (
-      e.message?.includes("401") ||
-      e.message?.includes("UNAUTHENTICATED")
-    ) {
+    if (e.message?.includes("401") || e.message?.includes("UNAUTHENTICATED")) {
       oauthCache.expiresAt = 0;
     }
   }
 }
-
-// ── Plugin registration ─────────────────────────────────────────────────────
-
-export default function register(api: any) {
+function register(api) {
   logger = api.logger ?? console;
   pluginApi = api;
-
   api.registerChannel({
     id: "googlechatpubsub",
     meta: {
@@ -1685,45 +1196,38 @@ export default function register(api: any) {
       label: "Google Chat (Pub/Sub)",
       selectionLabel: "Google Chat Pub/Sub (no-mention listening)",
       docsPath: "/channels/googlechatpubsub",
-      blurb:
-        "Listen to Google Chat spaces via Workspace Events + Pub/Sub. No @mention required.",
-      aliases: ["gchatpubsub", "gchat-pubsub"],
+      blurb: "Listen to Google Chat spaces via Workspace Events + Pub/Sub. No @mention required.",
+      aliases: ["gchatpubsub", "gchat-pubsub"]
     },
     capabilities: { chatTypes: ["group"], reactions: true, media: true },
     describeMessageTool: () => ({
-      actions: ["send", "react", "reactions", "upload-file"] as const,
+      actions: ["send", "react", "reactions", "upload-file"],
       capabilities: null,
-      schema: null,
+      schema: null
     }),
     messaging: {
       targetResolver: {
         hint: "spaces/<SPACE_ID>",
-        looksLikeId: (raw: string) => /^spaces\/[a-zA-Z0-9_-]+$/.test(raw.trim()),
-        resolveTarget: async ({ normalized }: any) => {
+        looksLikeId: (raw) => /^spaces\/[a-zA-Z0-9_-]+$/.test(raw.trim()),
+        resolveTarget: async ({ normalized }) => {
           const to = normalized?.trim();
           if (!to || !/^spaces\/[a-zA-Z0-9_-]+$/.test(to)) return null;
           return { to, kind: "group", source: "normalized" };
-        },
-      },
+        }
+      }
     },
     config: {
       listAccountIds: () => ["default"],
-      resolveAccount: (cfg: any) => {
-        // Primary: channels.googlechatpubsub (standard channel convention)
-        // Fallback: plugins.entries.googlechatpubsub.config (legacy ≤0.1.x)
-        const pluginCfg =
-          cfg.channels?.googlechatpubsub ||
-          cfg.plugins?.entries?.googlechatpubsub?.config ||
-          {};
+      resolveAccount: (cfg) => {
+        const pluginCfg = cfg.channels?.googlechatpubsub || cfg.plugins?.entries?.googlechatpubsub?.config || {};
         return { accountId: "default", ...pluginCfg };
-      },
+      }
     },
-    handleAction: async (ctx: any) => {
+    handleAction: async (ctx) => {
       const { action, params } = ctx;
-
       if (action === "react") {
         const messageName = params.messageId || params.message_id || params.target;
-        const emoji = params.emoji || "👀";
+        const emoji = params.emoji || "\u{1F440}";
         if (!messageName) {
           return { ok: false, error: "messageId (Chat message name) is required for react" };
         }
@@ -1734,18 +1238,17 @@ export default function register(api: any) {
             method: "POST",
             headers: { Authorization: `Bearer ${token}` },
             body: {
-              emoji: { unicode: emoji },
-            },
+              emoji: { unicode: emoji }
+            }
           });
           if (status >= 400) {
             return { ok: false, error: `Chat API react failed (${status}): ${JSON.stringify(data)}` };
           }
           return { ok: true, added: emoji };
-        } catch (e: any) {
+        } catch (e) {
           return { ok: false, error: `React failed: ${e.message}` };
         }
       }
-
       if (action === "reactions") {
         const messageName = params.messageId || params.message_id || params.target;
         if (!messageName) {
@@ -1756,14 +1259,13 @@ export default function register(api: any) {
           const url = `https://chat.googleapis.com/v1/${messageName}/reactions`;
           const { status, data } = await httpJson(url, {
             method: "GET",
-            headers: { Authorization: `Bearer ${token}` },
+            headers: { Authorization: `Bearer ${token}` }
           });
           return { ok: true, reactions: data.reactions || [] };
-        } catch (e: any) {
+        } catch (e) {
           return { ok: false, error: `List reactions failed: ${e.message}` };
         }
       }
-
       if (action === "send") {
         const text = params.message || params.text;
         const target = params.target;
@@ -1773,239 +1275,202 @@ export default function register(api: any) {
         try {
           const token = await getBotToken();
           const space = target;
-          // Respect replyInThread: if threadId/replyTo is provided, reply in that thread.
           const replyToThread = params.threadId || params.replyTo;
-          const binding = config?.bindings?.find((b: any) => b.space === space);
+          const binding = config?.bindings?.find((b) => b.space === space);
           const bindingReplyInThread = binding?.replyInThread ?? false;
-          const msgBody: any = { text };
+          const msgBody = { text };
           let url = `https://chat.googleapis.com/v1/${space}/messages`;
           if (replyToThread) {
             msgBody.thread = { name: replyToThread };
             url += `?messageReplyOption=REPLY_MESSAGE_FALLBACK_TO_NEW_THREAD`;
           } else if (bindingReplyInThread) {
-            logger.warn(`[handleAction.send] replyInThread=true for ${space} but no threadId provided — landing in main chat`);
+            logger.warn(`[handleAction.send] replyInThread=true for ${space} but no threadId provided \u2014 landing in main chat`);
           }
           const { status, data } = await httpJson(url, {
             method: "POST",
             headers: { Authorization: `Bearer ${token}` },
-            body: msgBody,
+            body: msgBody
           });
           return { ok: status < 400, messageId: data?.name };
-        } catch (e: any) {
+        } catch (e) {
           return { ok: false, error: `Send failed: ${e.message}` };
         }
       }
-
       if (action === "upload-file") {
         const target = params.target;
         if (!target) {
           return { ok: false, error: "target (spaces/<SPACE_ID>) is required for upload-file" };
         }
         const mediaRefs = [
-          ...(Array.isArray(params.media) ? params.media : params.media ? [params.media] : []),
-          ...(params.path ? [params.path] : []),
-          ...(Array.isArray(params.paths) ? params.paths : []),
-          ...(Array.isArray(params.attachments)
-            ? params.attachments.map((a: any) => a?.media).filter(Boolean)
-            : []),
-        ].filter((m: any): m is string => Boolean(m && String(m).trim()));
-
+          ...Array.isArray(params.media) ? params.media : params.media ? [params.media] : [],
+          ...params.path ? [params.path] : [],
+          ...Array.isArray(params.paths) ? params.paths : [],
+          ...Array.isArray(params.attachments) ? params.attachments.map((a) => a?.media).filter(Boolean) : []
+        ].filter((m) => Boolean(m && String(m).trim()));
         if (mediaRefs.length === 0) {
           return { ok: false, error: "media (path or URL) is required for upload-file" };
         }
-
         try {
-          // attachments:upload requires user auth, not the bot service account.
           const token = await getOAuthToken();
-          const binding = config?.bindings?.find((b: any) => b.space === target);
+          const binding = config?.bindings?.find((b) => b.space === target);
           const replyToThread = params.threadId || params.replyTo;
-          const threadName = replyToThread ? String(replyToThread) : undefined;
+          const threadName = replyToThread ? String(replyToThread) : void 0;
           if (binding?.replyInThread && !replyToThread) {
             logger.warn(
-              `[handleAction.upload-file] replyInThread=true for ${target} but no threadId provided — landing in main chat`
+              `[handleAction.upload-file] replyInThread=true for ${target} but no threadId provided \u2014 landing in main chat`
             );
           }
-
           const result = await sendMediaMessages({
             space: target,
             mediaRefs: [...new Set(mediaRefs)],
             token,
             text: params.message || params.text || params.caption,
-            threadName,
+            threadName
           });
-
           if (result.sent === 0) {
             return {
               ok: false,
-              error: `All uploads failed: ${result.failed.join("; ").slice(0, 500)}`,
+              error: `All uploads failed: ${result.failed.join("; ").slice(0, 500)}`
             };
           }
           return {
             ok: true,
             sent: result.sent,
             messageIds: result.messageIds,
-            ...(result.failed.length ? { partialFailures: result.failed } : {}),
+            ...result.failed.length ? { partialFailures: result.failed } : {}
           };
-        } catch (e: any) {
+        } catch (e) {
           return { ok: false, error: `Upload failed: ${e.message}` };
         }
       }
-
       return { ok: false, error: `Unsupported action: ${action}` };
     },
     outbound: {
       deliveryMode: "direct",
-      sendText: async ({ text, target, threadId, replyTo }: any) => {
+      sendText: async ({ text, target, threadId, replyTo }) => {
         try {
           const token = await getBotToken();
           const space = target || config?.bindings?.[0]?.space;
           if (!space) return { ok: false };
-
           const replyToThread = threadId || replyTo;
-          const binding = config?.bindings?.find((b: any) => b.space === space);
+          const binding = config?.bindings?.find((b) => b.space === space);
           const bindingReplyInThread = binding?.replyInThread ?? false;
-          const msgBody: any = { text };
+          const msgBody = { text };
           let url = `https://chat.googleapis.com/v1/${space}/messages`;
           if (replyToThread) {
             msgBody.thread = { name: replyToThread };
             url += `?messageReplyOption=REPLY_MESSAGE_FALLBACK_TO_NEW_THREAD`;
           } else if (bindingReplyInThread) {
-            logger.warn(`[outbound.sendText] replyInThread=true for ${space} but no threadId — landing in main chat`);
+            logger.warn(`[outbound.sendText] replyInThread=true for ${space} but no threadId \u2014 landing in main chat`);
           }
           const { status, data } = await httpJson(url, {
             method: "POST",
             headers: { Authorization: `Bearer ${token}` },
-            body: msgBody,
+            body: msgBody
           });
-          // Surface the platform message id so core does not suppress delivery
-          // with `adapter_returned_no_identity`.
           if (status < 400) markProcessed(data?.name);
           return { ok: status < 400, messageId: data?.name, target: space };
-        } catch (e: any) {
+        } catch (e) {
           logger.error(`outbound sendText error: ${e.message}`);
           return { ok: false };
         }
       },
-      sendMedia: async ({ text, target, threadId, replyTo, mediaUrl, mediaReadFile }: any) => {
+      sendMedia: async ({ text, target, threadId, replyTo, mediaUrl, mediaReadFile }) => {
         try {
-          // attachments:upload requires user auth, not the bot service account.
           const token = await getOAuthToken();
           const space = target || config?.bindings?.[0]?.space;
           if (!space) return { ok: false };
           if (!mediaUrl) return { ok: false };
-
           const replyToThread = threadId || replyTo;
-          const binding = config?.bindings?.find((b: any) => b.space === space);
+          const binding = config?.bindings?.find((b) => b.space === space);
           if (binding?.replyInThread && !replyToThread) {
             logger.warn(
-              `[outbound.sendMedia] replyInThread=true for ${space} but no threadId — landing in main chat`
+              `[outbound.sendMedia] replyInThread=true for ${space} but no threadId \u2014 landing in main chat`
             );
           }
-
           const result = await sendMediaMessages({
             space,
             mediaRefs: [String(mediaUrl)],
             token,
             text,
-            threadName: replyToThread ? String(replyToThread) : undefined,
-            readFile: mediaReadFile,
+            threadName: replyToThread ? String(replyToThread) : void 0,
+            readFile: mediaReadFile
           });
-          // Core suppresses delivery as `adapter_returned_no_identity` unless a
-          // concrete platform message id comes back, so always surface one.
           return {
             ok: result.sent > 0,
             messageId: result.messageIds[0],
-            target: space,
+            target: space
           };
-        } catch (e: any) {
+        } catch (e) {
           logger.error(`outbound sendMedia error: ${e.message}`);
           return { ok: false };
         }
-      },
-    },
+      }
+    }
   });
-
-  // Register background service
   api.registerService({
-      id: "googlechatpubsub-listener",
-
-      start: async () => {
-        try {
+    id: "googlechatpubsub-listener",
+    start: async () => {
+      try {
         logger.info("[googlechatpubsub] start() called");
         const cfg = api.config;
-        // Primary: channels.googlechatpubsub (standard channel convention)
-        // Fallback: plugins.entries.googlechatpubsub.config (legacy ≤0.1.x)
-        const pluginConfig: PubSubConfig =
-          cfg.channels?.googlechatpubsub ||
-          cfg.plugins?.entries?.googlechatpubsub?.config;
-
+        const pluginConfig = cfg.channels?.googlechatpubsub || cfg.plugins?.entries?.googlechatpubsub?.config;
         logger.info(`[googlechatpubsub] pluginConfig exists: ${!!pluginConfig}, enabled: ${pluginConfig?.enabled}`);
-
         if (!pluginConfig?.enabled) {
-          logger.info("[googlechatpubsub] Disabled — skipping start");
+          logger.info("[googlechatpubsub] Disabled \u2014 skipping start");
           return;
         }
-
         config = pluginConfig;
-
-        serviceAccountFile =
-          config.serviceAccountFile ||
-          cfg.channels?.googlechat?.serviceAccountFile ||
-          "";
-
+        serviceAccountFile = config.serviceAccountFile || cfg.channels?.googlechat?.serviceAccountFile || "";
         if (!serviceAccountFile) {
           logger.error("[googlechatpubsub] No serviceAccountFile configured");
           return;
         }
-
         routingTable = buildRoutingTable(config.bindings);
         targetSpaces = new Set(config.bindings.map((b) => b.space));
         subscriptionState = loadSubState();
         lastRenewalCheck = 0;
-
-        const pollMs = (config.pollIntervalSeconds ?? 3) * 1000;
-
-        logger.info("═".repeat(60));
-        logger.info("[googlechatpubsub] Starting listener (v3 — in-process pipeline)");
+        const pollMs = (config.pollIntervalSeconds ?? 3) * 1e3;
+        logger.info("\u2550".repeat(60));
+        logger.info("[googlechatpubsub] Starting listener (v3 \u2014 in-process pipeline)");
         logger.info(`  Project     : ${config.projectId}`);
         logger.info(`  Topic       : ${config.topicId}`);
         logger.info(`  Subscription: ${config.subscriptionId}`);
         logger.info(`  Poll        : ${pollMs}ms`);
         for (const space of targetSpaces) {
-          const entry = routingTable.get(space)!;
+          const entry = routingTable.get(space);
           const kws = [...entry.keywordAgents.keys()];
           const als = entry.alwaysListen.map((a) => a.agentId);
-          logger.info(`  ├─ ${space}`);
-          logger.info(`  │  keywords: ${JSON.stringify(kws)}`);
-          logger.info(`  │  alwaysListen: ${JSON.stringify(als)}`);
-          logger.info(`  │  replyInThread: ${entry.replyInThread}`);
-          logger.info(`  │  threadSessionIsolation: ${entry.threadSessionIsolation}`);
+          logger.info(`  \u251C\u2500 ${space}`);
+          logger.info(`  \u2502  keywords: ${JSON.stringify(kws)}`);
+          logger.info(`  \u2502  alwaysListen: ${JSON.stringify(als)}`);
+          logger.info(`  \u2502  replyInThread: ${entry.replyInThread}`);
+          logger.info(`  \u2502  threadSessionIsolation: ${entry.threadSessionIsolation}`);
         }
-        logger.info("═".repeat(60));
-
-        // Initial token + subscription check
+        logger.info("\u2550".repeat(60));
         try {
           await getOAuthToken();
           await getBotToken();
           await checkAndRenewAll();
           lastRenewalCheck = Date.now();
-        } catch (e: any) {
+        } catch (e) {
           logger.error(`[googlechatpubsub] Init failed: ${e.message}`);
         }
-
         pollTimer = setInterval(() => pollOnce(), pollMs);
         logger.info("[googlechatpubsub] Poll loop started");
-        } catch (startErr: any) {
-          logger.error(`[googlechatpubsub] start() CRASHED: ${startErr.stack || startErr.message}`);
-        }
-      },
-
-      stop: () => {
-        if (pollTimer) {
-          clearInterval(pollTimer);
-          pollTimer = null;
-        }
-        logger.info("[googlechatpubsub] Stopped");
-      },
-    });
+      } catch (startErr) {
+        logger.error(`[googlechatpubsub] start() CRASHED: ${startErr.stack || startErr.message}`);
+      }
+    },
+    stop: () => {
+      if (pollTimer) {
+        clearInterval(pollTimer);
+        pollTimer = null;
+      }
+      logger.info("[googlechatpubsub] Stopped");
+    }
+  });
 }
+export {
+  register as default
+};

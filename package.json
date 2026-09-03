@@ -1,9 +1,12 @@
 {
   "name": "@teyou/openclaw-googlechatpubsub",
-  "version": "0.7.2",
+  "version": "0.8.0",
   "description": "OpenClaw channel plugin — listen to Google Chat spaces via Workspace Events + Pub/Sub. No @mention required. Multi-agent routing with keyword and alwaysListen support.",
   "type": "module",
-  "main": "index.ts",
+  "main": "dist/index.js",
+  "engines": {
+    "node": ">=20"
+  },
   "license": "MIT",
   "author": "",
   "keywords": [
@@ -20,7 +23,7 @@
   ],
   "files": [
     "package.json",
-    "index.ts",
+    "dist",
     "openclaw.plugin.json",
     "README.md",
     "LICENSE"
@@ -33,7 +36,7 @@
   },
   "openclaw": {
     "extensions": [
-      "./index.ts"
+      "./dist/index.js"
     ],
     "channel": {
       "id": "googlechatpubsub",
@@ -41,13 +44,18 @@
       "blurb": "Passive Google Chat listening via Workspace Events + Pub/Sub — no @mention required."
     },
     "compat": {
-      "pluginApi": "1",
-      "pluginApiRange": ">=1",
-      "builtWithOpenClawVersion": "2026.3.28",
-      "minGatewayVersion": "2026.3.22"
+      "pluginApi": ">=2026.8.1",
+      "builtWithOpenClawVersion": "2026.8.2",
+      "minGatewayVersion": "2026.8.1"
     },
     "build": {
-      "openclawVersion": "2026.3.28"
+      "openclawVersion": "2026.8.2",
+      "pluginSdkVersion": "2026.8.2"
+    },
+    "install": {
+      "npmSpec": "@teyou/openclaw-googlechatpubsub",
+      "defaultChoice": "npm",
+      "minHostVersion": ">=2026.8.1"
     }
   },
   "repository": {
@@ -57,5 +65,17 @@
   "homepage": "https://teyou.github.io/openclaw-googlechatpubsub-plugin/",
   "bugs": {
     "url": "https://github.com/teyou/openclaw-googlechatpubsub-plugin/issues"
+  },
+  "scripts": {
+    "build": "esbuild index.ts --bundle --platform=node --format=esm --target=node20 --external:openclaw --external:'openclaw/*' --outfile=dist/index.js",
+    "typecheck": "tsc --noEmit --skipLibCheck --target es2022 --module esnext --moduleResolution bundler --types node index.ts",
+    "test": "node --test 'test/**/*.test.mjs'",
+    "test:coverage": "node --test --experimental-test-coverage --test-coverage-include='.test-tmp/**' 'test/**/*.test.mjs'",
+    "prepack": "npm run build"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.1",
+    "esbuild": "^0.28.2",
+    "typescript": "^7.0.2"
   }
 }

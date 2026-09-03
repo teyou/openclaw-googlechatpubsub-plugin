@@ -3,8 +3,76 @@
   "kind": "channel",
   "name": "Google Chat Pub/Sub Listener",
   "description": "Listen to Google Chat spaces via Workspace Events + Pub/Sub — no @mention required. Multi-agent routing with keyword and alwaysListen support.",
-  "version": "0.6.0",
+  "version": "0.8.0",
+  "entry": "dist/index.js",
   "channels": ["googlechatpubsub"],
+  "channelConfigs": {
+    "googlechatpubsub": {
+      "label": "Google Chat (Pub/Sub)",
+      "description": "Passive Google Chat listening via Workspace Events + Pub/Sub",
+      "schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "enabled": { "type": "boolean" },
+          "projectId": { "type": "string", "description": "GCP project ID" },
+          "topicId": { "type": "string", "description": "Pub/Sub topic ID" },
+          "subscriptionId": { "type": "string", "description": "Pub/Sub subscription ID" },
+          "pollIntervalSeconds": { "type": "number", "minimum": 1, "default": 3 },
+          "renewalBufferMinutes": { "type": "number", "minimum": 5, "default": 30 },
+          "agentTimeoutSeconds": { "type": "number", "minimum": 10, "default": 60 },
+          "serviceAccountFile": { "type": "string", "description": "Path to Google Chat bot service account JSON (falls back to channels.googlechat.serviceAccountFile)" },
+          "crossAgentDispatch": { "type": "boolean", "default": false, "description": "When true, agent replies mentioning other agents' keywords trigger automatic cross-dispatch to those agents." },
+          "silentReply": { "type": "boolean", "default": false, "description": "When true, suppress typing indicator messages while the agent is working." },
+          "oauth": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "clientId": { "type": "string" },
+              "clientSecret": { "type": "string" },
+              "redirectUri": { "type": "string" },
+              "tokensFile": { "type": "string" }
+            },
+            "required": ["clientId", "clientSecret", "tokensFile"]
+          },
+          "bindings": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "space": { "type": "string", "description": "Google Chat space name (e.g. spaces/ABC123example)" },
+                "replyInThread": { "type": "boolean", "default": false, "description": "When true, replies are always posted in a thread." },
+                "threadSessionIsolation": { "type": "boolean", "description": "When true, each thread gets its own session. Defaults to replyInThread." },
+                "agents": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "agentId": { "type": "string" },
+                      "mentionKeyword": { "type": "string" },
+                      "alwaysListen": { "type": "boolean", "default": false }
+                    },
+                    "required": ["agentId"]
+                  }
+                }
+              },
+              "required": ["space", "agents"]
+            }
+          }
+        },
+        "required": []
+      },
+      "uiHints": {
+        "enabled": { "label": "Enable Pub/Sub Listener" },
+        "projectId": { "label": "GCP Project ID", "placeholder": "my-gcp-project" },
+        "oauth.clientId": { "label": "OAuth Client ID" },
+        "oauth.clientSecret": { "label": "OAuth Client Secret", "sensitive": true },
+        "oauth.tokensFile": { "label": "OAuth Tokens File Path" }
+      }
+    }
+  },
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
@@ -18,6 +86,7 @@
       "agentTimeoutSeconds": { "type": "number", "minimum": 10, "default": 60 },
       "serviceAccountFile": { "type": "string", "description": "Path to Google Chat bot service account JSON (falls back to channels.googlechat.serviceAccountFile)" },
       "crossAgentDispatch": { "type": "boolean", "default": false, "description": "When true, agent replies mentioning other agents' keywords trigger automatic cross-dispatch to those agents." },
+      "silentReply": { "type": "boolean", "default": false, "description": "When true, suppress typing indicator messages while the agent is working." },
       "oauth": {
         "type": "object",
         "additionalProperties": false,
@@ -35,7 +104,7 @@
           "type": "object",
           "additionalProperties": false,
           "properties": {
-            "space": { "type": "string", "description": "Google Chat space name (e.g. spaces/AAQA6hUKWfM)" },
+            "space": { "type": "string", "description": "Google Chat space name (e.g. spaces/TESTSPACE123)" },
             "replyInThread": { "type": "boolean", "default": false, "description": "When true, bot always replies in a thread (never main window). Messages in main window get a new thread." },
             "threadSessionIsolation": { "type": "boolean", "description": "When true, each thread gets its own session (Telegram forum style). Defaults to value of replyInThread." },
             "agents": {

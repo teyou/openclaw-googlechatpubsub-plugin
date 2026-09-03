@@ -1,5 +1,11 @@
 node_modules/
+*.bak
 *.js
 *.d.ts
 *.map
 !openclaw.plugin.json
+!dist/
+!dist/index.js
+
+# transient module built from dist/ for unit tests
+.test-tmp/
